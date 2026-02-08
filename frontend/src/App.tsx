@@ -1,9 +1,11 @@
-import React from "react";
+import { useState } from "react";
 import MultiFileUploader from "./components/MultiFileUploader";
 import Chat from "./components/Chat";
 import { Hammer } from "lucide-react";
 
 function App() {
+  const [projectId, setProjectId] = useState<number | null>(null);
+
   return (
     <div className="min-h-screen bg-gray-50 font-sans text-gray-900">
       {/* Header */}
@@ -18,9 +20,13 @@ function App() {
             </h1>
           </div>
           <div className="flex items-center gap-4 text-sm text-gray-500">
-            <span>Project: High-Rise A017</span>
-            <span className="px-2 py-1 bg-green-100 text-green-700 rounded-md text-xs font-semibold">
-              ONLINE
+            <span>
+              Project: {projectId ? `ID #${projectId}` : "Not Started"}
+            </span>
+            <span
+              className={`px-2 py-1 rounded-md text-xs font-semibold ${projectId ? "bg-green-100 text-green-700" : "bg-gray-100 text-gray-500"}`}
+            >
+              {projectId ? "ONLINE" : "WAITING FOR UPLOAD"}
             </span>
           </div>
         </div>
@@ -30,20 +36,20 @@ function App() {
       <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8 space-y-6">
         {/* Step 1: Upload Files */}
         <section>
-          <MultiFileUploader />
+          <MultiFileUploader onUploadSuccess={setProjectId} />
         </section>
 
         {/* Step 2: Workspace */}
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 h-[700px]">
           {/* Left: Chat Interface */}
           <section className="h-full">
-            <Chat />
+            <Chat projectId={projectId} />
           </section>
 
           {/* Right: Proposal Preview (Placeholder for now) */}
           <section className="bg-white rounded-xl shadow-sm border border-gray-100 p-6 flex flex-col items-center justify-center text-center">
             <div className="bg-gray-50 p-6 rounded-full mb-4">
-              <FileText className="w-10 h-10 text-gray-300" />
+              <FileIcon className="w-10 h-10 text-gray-300" />
             </div>
             <h3 className="text-lg font-medium text-gray-900">
               Proposal Preview
@@ -59,8 +65,8 @@ function App() {
   );
 }
 
-// Icon for placeholder
-function FileText({ className }: { className?: string }) {
+// Icon (renamed to avoid conflict)
+function FileIcon({ className }: { className?: string }) {
   return (
     <svg
       xmlns="http://www.w3.org/2000/svg"

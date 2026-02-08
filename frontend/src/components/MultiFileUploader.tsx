@@ -1,8 +1,12 @@
 import React, { useState } from "react";
 import axios from "axios";
-import { Upload, FileText, CheckCircle, AlertCircle } from "lucide-react";
+import { Upload, FileText, CheckCircle } from "lucide-react";
 
-const MultiFileUploader: React.FC = () => {
+interface UploaderProps {
+  onUploadSuccess: (projectId: number) => void;
+}
+
+const MultiFileUploader: React.FC<UploaderProps> = ({ onUploadSuccess }) => {
   const [boqFile, setBoqFile] = useState<File | null>(null);
   const [breakdownFile, setBreakdownFile] = useState<File | null>(null);
   const [scheduleFile, setScheduleFile] = useState<File | null>(null);
@@ -21,10 +25,17 @@ const MultiFileUploader: React.FC = () => {
 
     try {
       setStatus("Uploading...");
-      await axios.post("http://localhost:8000/upload/files", formData, {
-        headers: { "Content-Type": "multipart/form-data" },
-      });
+      const res = await axios.post(
+        "http://localhost:8000/upload/files",
+        formData,
+        {
+          headers: { "Content-Type": "multipart/form-data" },
+        },
+      );
       setStatus("Upload Successful!");
+      if (res.data.status === "success") {
+        onUploadSuccess(res.data.data.project_id);
+      }
     } catch (error) {
       console.error(error);
       setStatus("Upload Failed.");

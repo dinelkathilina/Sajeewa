@@ -16,6 +16,7 @@ class Project(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
     
     boq_items = relationship("BOQItem", back_populates="project")
+    rate_breakdowns = relationship("RateBreakdown", back_populates="project")
     variations = relationship("Variation", back_populates="project")
 
 class BOQItem(Base):
@@ -30,6 +31,19 @@ class BOQItem(Base):
     amount = Column(Float)
     
     project = relationship("Project", back_populates="boq_items")
+
+class RateBreakdown(Base):
+    __tablename__ = "rate_breakdowns"
+    id = Column(Integer, primary_key=True, index=True)
+    project_id = Column(Integer, ForeignKey("projects.id"))
+    item_ref = Column(String, index=True)
+    description = Column(String)
+    material_cost = Column(Float, default=0.0)
+    labor_cost = Column(Float, default=0.0)
+    plant_cost = Column(Float, default=0.0)
+    total_rate = Column(Float, default=0.0)
+    
+    project = relationship("Project", back_populates="rate_breakdowns")
 
 class Variation(Base):
     __tablename__ = "variations"

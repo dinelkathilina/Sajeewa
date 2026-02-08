@@ -1,12 +1,18 @@
 import React, { useState } from "react";
-import { Send, Bot, User } from "lucide-react";
+import axios from "axios";
+import { Send, Bot } from "lucide-react";
 
 interface Msg {
   sender: "user" | "bot";
   text: string;
+  proposal?: any;
 }
 
-const Chat: React.FC = () => {
+interface ChatProps {
+  projectId: number | null;
+}
+
+const Chat: React.FC<ChatProps> = ({ projectId }) => {
   const [messages, setMessages] = useState<Msg[]>([
     {
       sender: "bot",
@@ -14,18 +20,51 @@ const Chat: React.FC = () => {
     },
   ]);
   const [input, setInput] = useState("");
+  const [loading, setLoading] = useState(false);
 
-  const send = () => {
+  const send = async () => {
     if (!input.trim()) return;
-    setMessages([...messages, { sender: "user", text: input }]);
-    setInput("");
-    // TODO: Call API
-    setTimeout(() => {
+
+    if (!projectId) {
       setMessages((prev) => [
         ...prev,
-        { sender: "bot", text: "I am processing your request..." },
+        { sender: "user", text: input },
+        {
+          sender: "bot",
+          text: "Please upload files first to start a project.",
+        },
       ]);
-    }, 1000);
+      setInput("");
+      return;
+    }
+
+    const userMsg = input;
+    setMessages((prev) => [...prev, { sender: "user", text: userMsg }]);
+    setInput("");
+    setLoading(true);
+
+    try {
+      const res = await axios.post("http://localhost:8000/chat", {
+        message: userMsg,
+        project_id: projectId,
+      });
+
+      setMessages((prev) => [
+        ...prev,
+        {
+          sender: "bot",
+          text: res.data.reply,
+          proposal: res.data.proposal,
+        },
+      ]);
+    } catch (err) {
+      setMessages((prev) => [
+        ...prev,
+        { sender: "bot", text: "Error connecting to server." },
+      ]);
+    } finally {
+      setLoading(false);
+    }
   };
 
   return (
@@ -38,7 +77,7 @@ const Chat: React.FC = () => {
         {messages.map((m, i) => (
           <div
             key={i}
-            className={`flex ${m.sender === "user" ? "justify-end" : "justify-start"}`}
+            className={`flex flex-col ${m.sender === "user" ? "items-end" : "items-start"}`}
           >
             <div
               className={`max-w-[80%] p-3 rounded-2xl text-sm ${
@@ -49,21 +88,54 @@ const Chat: React.FC = () => {
             >
               {m.text}
             </div>
+            {m.proposal && (
+              <div className="mt-2 bg-yellow-50 border border-yellow-200 p-3 rounded-lg text-sm text-yellow-800 w-64 shadow-sm">
+                <p className="font-semibold text-yellow-900 border-b border-yellow-200 pb-1 mb-1">
+                  Impact Preview
+                </p>
+                <div className="flex justify-between items-center text-xs mb-1">
+                  <span>Original:</span>
+                  <span className="font-mono">${m.proposal.original_rate}</span>
+                </div>
+                <div className="flex justify-between items-center text-xs font-bold">
+                  <span>New Rate:</span>
+                  <span className="font-mono">${m.proposal.new_rate}</span>
+                </div>
+                <div className="mt-2 pt-2 border-t border-yellow-200 flex items-center justify-between text-xs text-yellow-700">
+                  <span>Total Cost Impact:</span>
+                  <span className="font-bold">
+                    {m.proposal.cost_impact > 0 ? "+" : ""}$
+                    {m.proposal.cost_impact}
+                  </span>
+                </div>
+              </div>
+            )}
           </div>
         ))}
+        {loading && (
+          <div className="text-gray-400 text-xs animate-pulse">
+            Assistant is thinking...
+          </div>
+        )}
       </div>
 
       <div className="p-4 border-t border-gray-100 flex gap-2">
         <input
           className="flex-1 border border-gray-300 rounded-lg px-4 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500"
-          placeholder="Type a variation (e.g., 'Change Lobby tiles to Granite')..."
+          placeholder={
+            projectId
+              ? "Type a variation (e.g., 'Change Tiles to Granite')..."
+              : "Upload files to start..."
+          }
           value={input}
+          disabled={loading}
           onChange={(e) => setInput(e.target.value)}
           onKeyPress={(e) => e.key === "Enter" && send()}
         />
         <button
           onClick={send}
-          className="bg-blue-600 text-white p-2 rounded-lg hover:bg-blue-700"
+          disabled={loading}
+          className="bg-blue-600 text-white p-2 rounded-lg hover:bg-blue-700 disabled:bg-gray-300"
         >
           <Send className="w-5 h-5" />
         </button>
