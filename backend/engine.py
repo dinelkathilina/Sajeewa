@@ -18,75 +18,148 @@ class CostEngine:
 
     def load_boq(self, file_path, project_id):
         try:
-            df = pd.read_excel(file_path)
-            df.columns = [c.lower() for c in df.columns]
+            # Read CSV with robust encoding handling
+            try:
+                df = pd.read_csv(file_path, encoding='utf-8', header=None)
+            except UnicodeDecodeError:
+                df = pd.read_csv(file_path, encoding='latin1', header=None)
+
+            # Find the header row (look for 'desc' or 'qty' in any cell)
+            header_idx = 0
+            for i, row in df.head(30).iterrows():
+                row_str = " ".join(str(v).lower() for v in row if pd.notna(v))
+                if 'desc' in row_str or 'qty' in row_str:
+                    header_idx = i
+                    break
             
-            # ... (mappings) ...
+            # Re-read with correct header
+            df = pd.read_csv(file_path, encoding='utf-8', skiprows=header_idx) if header_idx > 0 else df
+            df.columns = [str(c).strip().lower() for c in df.columns]
+            
+            # Smart Column Mapping
+            def find_col(keywords):
+                for c in df.columns:
+                    if any(k in c for k in keywords):
+                        return c
+                return None
+
             col_map = {
-                'item': next((c for c in df.columns if 'item' in c), None),
-                'description': next((c for c in df.columns if 'desc' in c), None),
-                'unit': next((c for c in df.columns if 'unit' in c), None),
-                'qty': next((c for c in df.columns if 'qty' in c or 'quantity' in c), None),
-                'rate': next((c for c in df.columns if 'rate' in c or 'price' in c), None),
-                'amount': next((c for c in df.columns if 'amount' in c or 'total' in c), None)
+                'item': find_col(['item', 'ref', 'no']),
+                'description': find_col(['description', 'desc', 'work']),
+                'unit': find_col(['unit']),
+                'qty': find_col(['qty', 'quantity']),
+                'rate': find_col(['rate', 'price']),
+                'amount': find_col(['amount', 'total'])
             }
 
             items = []
             for _, row in df.iterrows():
-                if pd.isna(row[col_map['description']]): continue
+                # Skip empty descriptions
+                desc_col = col_map['description']
+                if not desc_col or pd.isna(row[desc_col]): continue
 
-                item = BOQItem(
+                # Clean numeric values (strip commas, handle Rs.)
+                def clean_num(val):
+                    if pd.isna(val): return 0.0
+                    try:
+                        s = str(val).replace(',', '').replace('rs.', '').replace('rs', '').strip()
+                        return float(s)
+                    except: return 0.0
+
+                items.append(BOQItem(
                     project_id=project_id,
                     item_number=str(row.get(col_map['item'], '')),
-                    description=str(row.get(col_map['description'], '')),
+                    description=str(row[desc_col]),
                     unit=str(row.get(col_map['unit'], '')),
-                    quantity=float(row.get(col_map['qty'], 0) or 0),
-                    rate=float(row.get(col_map['rate'], 0) or 0),
-                    amount=float(row.get(col_map['amount'], 0) or 0)
-                )
-                items.append(item)
+                    quantity=clean_num(row.get(col_map['qty'], 0)),
+                    rate=clean_num(row.get(col_map['rate'], 0)),
+                    amount=clean_num(row.get(col_map['amount'], 0))
+                ))
             
-            self.db.add_all(items)
-            self.db.commit()
-            
-            # Train model after loading
-            self.train_model(project_id)
-            
+            if items:
+                self.db.add_all(items)
+                self.db.commit()
+                self.train_model(project_id)
             return len(items)
         except Exception as e:
             print(f"Error loading BOQ: {e}")
             return 0
 
     def load_rate_breakdown(self, file_path, project_id):
+        """
+        Specialized parser for nested CSV Rate Breakdowns.
+        Iterates row by row to find item headers and categorized subtotals.
+        """
         try:
-            df = pd.read_excel(file_path)
-            df.columns = [c.lower() for c in df.columns]
-            col_map = {
-                'item': next((c for c in df.columns if 'item' in c or 'ref' in c), None),
-                'desc': next((c for c in df.columns if 'desc' in c), None),
-                'mat': next((c for c in df.columns if 'mat' in c), None),
-                'lab': next((c for c in df.columns if 'lab' in c), None),
-                'plant': next((c for c in df.columns if 'plant' in c or 'equip' in c), None),
-                'total': next((c for c in df.columns if 'total' in c or 'rate' in c), None),
-            }
+            try:
+                df = pd.read_csv(file_path, encoding='utf-8', header=None)
+            except UnicodeDecodeError:
+                df = pd.read_csv(file_path, encoding='latin1', header=None)
+
             items = []
-            for _, row in df.iterrows():
-                if pd.isna(row[col_map['desc']]): continue
-                rb = RateBreakdown(
-                    project_id=project_id,
-                    item_ref=str(row.get(col_map['item'], '')),
-                    description=str(row.get(col_map['desc'], '')),
-                    material_cost=float(row.get(col_map['mat'], 0) or 0),
-                    labor_cost=float(row.get(col_map['lab'], 0) or 0),
-                    plant_cost=float(row.get(col_map['plant'], 0) or 0),
-                    total_rate=float(row.get(col_map['total'], 0) or 0)
-                )
-                items.append(rb)
-            self.db.add_all(items)
-            self.db.commit()
+            current_ref = None
+            current_desc = None
+            costs = {'mat': 0.0, 'lab': 0.0, 'plant': 0.0, 'total': 0.0}
+
+            def clean_val(v):
+                if pd.isna(v): return 0.0
+                try: 
+                    return float(str(v).replace(',', '').strip())
+                except: return 0.0
+
+            for i, row in df.iterrows():
+                row_list = [str(v).strip() for v in row if pd.notna(v)]
+                row_str = " ".join(row_list).lower()
+
+                # 1. Detect Item Header (e.g., "2A/05 Filling with...")
+                col0 = str(row[0]).strip() if pd.notna(row[0]) else ""
+                if col0 and any(char.isdigit() for char in col0) and '/' in col0:
+                    # Save previous item if exists
+                    if current_ref and costs['total'] > 0:
+                        items.append(RateBreakdown(
+                            project_id=project_id, item_ref=current_ref, description=current_desc,
+                            material_cost=costs['mat'], labor_cost=costs['lab'], 
+                            plant_cost=costs['plant'], total_rate=costs['total']
+                        ))
+                    
+                    current_ref = col0
+                    current_desc = str(row[1]) if pd.notna(row[1]) else ""
+                    costs = {'mat': 0.0, 'lab': 0.0, 'plant': 0.0, 'total': 0.0}
+
+                # 2. Look for subtotals (using smarter value finding)
+                def get_row_value(r):
+                    # Try to find the first numeric-looking thing at the end of the row
+                    for val in reversed(r):
+                        if pd.notna(val):
+                            c = clean_val(val)
+                            if c > 0: return c
+                    return 0.0
+
+                if 'total material cost' in row_str:
+                    costs['mat'] = get_row_value(row)
+                elif 'total labour cost' in row_str:
+                    costs['lab'] = get_row_value(row)
+                elif 'total tools and equipment cost' in row_str:
+                    costs['plant'] = get_row_value(row)
+                elif 'total gross unit rate' in row_str:
+                    costs['total'] = get_row_value(row)
+
+            # Last item
+            if current_ref and costs['total'] > 0:
+                items.append(RateBreakdown(
+                    project_id=project_id, item_ref=current_ref, description=current_desc,
+                    material_cost=costs['mat'], labor_cost=costs['lab'], 
+                    plant_cost=costs['plant'], total_rate=costs['total']
+                ))
+
+            if items:
+                self.db.add_all(items)
+                self.db.commit()
             return len(items)
         except Exception as e:
             print(f"Error loading Rate Breakdown: {e}")
+            import traceback
+            traceback.print_exc()
             return 0
 
     def calculate_new_rate(self, item_description, original_rate, qty_change_pct, amt_change_pct, unit_cost_change_pct):
@@ -122,8 +195,6 @@ class CostEngine:
             labor_portion = base_rate * 0.30
             material_portion = base_rate * 0.70
             
-            # If productivity is lower (factor < 1), labor cost increases
-            # Actually, cost is inversely proportional to productivity
             # Cost Factor = p_old / p_new
             cost_factor = p_old / p_new if p_new > 0 else 1.0
             
@@ -139,26 +210,39 @@ class TimeEngine:
 
     def parse_schedule(self, file_path):
         if file_path.endswith('.xml'): return self._parse_msp_xml(file_path)
-        if file_path.endswith('.xlsx'): return self._parse_msp_excel(file_path)
+        if file_path.endswith('.csv'): return self._parse_msp_csv(file_path)
         return 0
 
-    def _parse_msp_excel(self, file_path):
+    def _parse_msp_csv(self, file_path):
         try:
-            df = pd.read_excel(file_path)
-            df.columns = [c.lower() for c in df.columns]
+            try:
+                df = pd.read_csv(file_path, encoding='utf-8')
+            except UnicodeDecodeError:
+                df = pd.read_csv(file_path, encoding='latin1')
             
-            # Simple Column Mapping
+            df.columns = [str(c).replace(' ', '_').lower() for c in df.columns]
+            
+            # Flexible Column Mapping
             col_map = {
-                'id': next((c for c in df.columns if 'id' in c or 'uid' in c), None),
+                'id': next((c for c in df.columns if 'task_id' in c or 'uid' in c), None),
                 'name': next((c for c in df.columns if 'name' in c or 'task' in c), None),
-                'duration': next((c for c in df.columns if 'dur' in c), None),
+                'duration': next((c for c in df.columns if 'duration' in c or 'dur' in c), None),
                 'predecessors': next((c for c in df.columns if 'pred' in c), None)
             }
             
             for _, row in df.iterrows():
                 t_id = str(row.get(col_map['id'])) if col_map['id'] else str(_)
                 t_name = str(row.get(col_map['name'], f"Task {t_id}"))
-                duration = float(row.get(col_map['duration'], 0) or 0)
+                
+                # Parse duration (handle "533 days")
+                dur_val = row.get(col_map['duration'], 0)
+                duration = 0.0
+                if pd.notna(dur_val):
+                    try:
+                        # Extract digits only
+                        s_dur = "".join(filter(str.isdigit, str(dur_val)))
+                        duration = float(s_dur) if s_dur else 0.0
+                    except: pass
                 
                 self.graph.add_node(t_id, name=t_name, duration=duration)
                 

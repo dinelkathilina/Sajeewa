@@ -13,6 +13,8 @@ class Project(Base):
     __tablename__ = "projects"
     id = Column(Integer, primary_key=True, index=True)
     name = Column(String, index=True)
+    description = Column(String, nullable=True)
+    boq_filename = Column(String, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
     
     boq_items = relationship("BOQItem", back_populates="project")

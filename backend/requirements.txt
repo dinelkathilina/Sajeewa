@@ -6,6 +6,6 @@ networkx
 python-multipart
 scikit-learn
 sqlalchemy
-google-generativeai
 python-dotenv
 reportlab
+openai

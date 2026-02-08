@@ -32,13 +32,17 @@ const MultiFileUploader: React.FC<UploaderProps> = ({ onUploadSuccess }) => {
           headers: { "Content-Type": "multipart/form-data" },
         },
       );
-      setStatus("Upload Successful!");
+
       if (res.data.status === "success") {
+        setStatus("Upload Successful!");
         onUploadSuccess(res.data.data.project_id);
+      } else {
+        setStatus(`Upload Failed: ${res.data.message || "Unknown error"}`);
       }
-    } catch (error) {
+    } catch (error: any) {
       console.error(error);
-      setStatus("Upload Failed.");
+      const msg = error.response?.data?.message || error.message;
+      setStatus(`Upload Failed: ${msg}`);
     }
   };
 
@@ -66,7 +70,7 @@ const MultiFileUploader: React.FC<UploaderProps> = ({ onUploadSuccess }) => {
           type="file"
           className="hidden"
           onChange={(e) => e.target.files && setFile(e.target.files[0])}
-          accept=".xlsx,.xls,.xml"
+          accept=".csv"
         />
       </label>
     </div>
@@ -86,7 +90,7 @@ const MultiFileUploader: React.FC<UploaderProps> = ({ onUploadSuccess }) => {
           setFile={setBreakdownFile}
         />
         <FileInput
-          label="Schedule (MSP/Excel)"
+          label="Schedule (CSV/XML)"
           file={scheduleFile}
           setFile={setScheduleFile}
         />
