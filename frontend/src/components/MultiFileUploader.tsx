@@ -1,0 +1,102 @@
+import React, { useState } from "react";
+import axios from "axios";
+import { Upload, FileText, CheckCircle, AlertCircle } from "lucide-react";
+
+const MultiFileUploader: React.FC = () => {
+  const [boqFile, setBoqFile] = useState<File | null>(null);
+  const [breakdownFile, setBreakdownFile] = useState<File | null>(null);
+  const [scheduleFile, setScheduleFile] = useState<File | null>(null);
+  const [status, setStatus] = useState<string>("");
+
+  const handleUpload = async () => {
+    if (!boqFile || !breakdownFile || !scheduleFile) {
+      setStatus("Please select all 3 files.");
+      return;
+    }
+
+    const formData = new FormData();
+    formData.append("boq", boqFile);
+    formData.append("breakdown", breakdownFile);
+    formData.append("schedule", scheduleFile);
+
+    try {
+      setStatus("Uploading...");
+      await axios.post("http://localhost:8000/upload/files", formData, {
+        headers: { "Content-Type": "multipart/form-data" },
+      });
+      setStatus("Upload Successful!");
+    } catch (error) {
+      console.error(error);
+      setStatus("Upload Failed.");
+    }
+  };
+
+  const FileInput = ({
+    label,
+    file,
+    setFile,
+  }: {
+    label: string;
+    file: File | null;
+    setFile: (f: File) => void;
+  }) => (
+    <div className="border border-gray-300 p-4 rounded-lg flex flex-col items-center justify-center bg-gray-50 hover:bg-white transition-colors">
+      <label className="cursor-pointer flex flex-col items-center">
+        {file ? (
+          <CheckCircle className="text-green-500 mb-2" />
+        ) : (
+          <Upload className="text-gray-400 mb-2" />
+        )}
+        <span className="text-sm font-medium text-gray-700">{label}</span>
+        <span className="text-xs text-gray-500 mt-1">
+          {file ? file.name : "Click to select"}
+        </span>
+        <input
+          type="file"
+          className="hidden"
+          onChange={(e) => e.target.files && setFile(e.target.files[0])}
+          accept=".xlsx,.xls,.xml"
+        />
+      </label>
+    </div>
+  );
+
+  return (
+    <div className="bg-white p-6 rounded-xl shadow-sm border border-gray-100">
+      <h3 className="text-lg font-semibold text-gray-800 mb-4 flex items-center gap-2">
+        <FileText className="w-5 h-5" /> Project Documents
+      </h3>
+
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
+        <FileInput label="BOQ File" file={boqFile} setFile={setBoqFile} />
+        <FileInput
+          label="Rate Breakdown"
+          file={breakdownFile}
+          setFile={setBreakdownFile}
+        />
+        <FileInput
+          label="Schedule (MSP/Excel)"
+          file={scheduleFile}
+          setFile={setScheduleFile}
+        />
+      </div>
+
+      <div className="flex items-center justify-between">
+        <span
+          className={`text-sm ${status.includes("Success") ? "text-green-600" : "text-red-500"}`}
+        >
+          {status}
+        </span>
+        <button
+          onClick={handleUpload}
+          disabled={!boqFile || !breakdownFile || !scheduleFile}
+          className="bg-blue-600 text-white px-6 py-2 rounded-lg hover:bg-blue-700 disabled:bg-gray-300 disabled:cursor-not-allowed transition-colors font-medium"
+        >
+          Upload All Files
+        </button>
+      </div>
+    </div>
+  );
+};
+
+export default MultiFileUploader;

@@ -1,0 +1,8 @@
+fastapi
+uvicorn
+pandas
+openpyxl
+networkx
+python-multipart
+scikit-learn
+sqlalchemy
