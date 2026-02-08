@@ -2,12 +2,23 @@ from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
 import pandas as pd
 import numpy as np
+import os
+import json
+import google.generativeai as genai
 
 class MLModel:
     def __init__(self):
         self.vectorizer = TfidfVectorizer(stop_words='english')
         self.boq_df = None
         self.tfidf_matrix = None
+        
+        # Initialize Gemini if key exists
+        api_key = os.getenv("GOOGLE_API_KEY")
+        if api_key:
+            genai.configure(api_key=api_key)
+            self.model = genai.GenerativeModel('gemini-1.5-flash')
+        else:
+            self.model = None
 
     def fit_boq(self, boq_items):
         """
@@ -62,13 +73,59 @@ class MLModel:
     def parse_instruction(self, text):
         """
         Parses user text to extract intent and data.
-        Returns dict with keys: intent, description, quantity, new_material
+        Uses Gemini if available, otherwise falls back to Regex.
         """
+        # Get sample items for context if available
+        context_items = ""
+        if self.boq_df is not None:
+            samples = self.boq_df['description'].head(10).tolist()
+            context_items = "\nSample items in BOQ: " + ", ".join(samples)
+
+        if self.model:
+            try:
+                prompt = f"""
+                You are a Construction Variation Assistant.
+                User Request: "{text}"
+                {context_items}
+
+                Task:
+                1. If the user wants to change an item (qty or material), return JSON:
+                   {{"intent": "change_spec" | "change_qty", "description": "old item name", "new_material": "new material", "quantity": val}}
+                2. If the user wants to check a delay, return JSON:
+                   {{"intent": "delay", "description": "task name", "quantity": days}}
+                3. If it is a general question or greeting, return JSON:
+                   {{"intent": "conversational", "reply": "A helpful response based on the BOQ samples provided above"}}
+                4. Otherwise: {{"intent": "unknown"}}
+
+                Only return the JSON.
+                """
+                response = self.model.generate_content(prompt)
+                clean_json = response.text.replace('```json', '').replace('```', '').strip()
+                data = json.loads(clean_json)
+                return data
+            except Exception as e:
+                print(f"Gemini parsing failed: {e}")
+        
+        # Regex Fallback (Improved Local Intelligence)
         import re
         text = text.lower()
         result = {'intent': 'unknown', 'description': None, 'quantity': None, 'unit': None}
         
-        # Regex for Quantity Change: "Change quantity of X to 500" or "Set qty of X to 500"
+        # 1. Greetings
+        if any(greet in text for greet in ['hi', 'hello', 'hey', 'start']):
+            result['intent'] = 'conversational'
+            result['reply'] = "Hello! I am your project assistant. You can ask me to 'Change [item] to [new material]' or 'Delay [task] by 10 days'."
+            return result
+
+        # 2. List items query
+        if any(kw in text for kw in ['what', 'show', 'list', 'see', 'items']):
+            if self.boq_df is not None:
+                samples = self.boq_df['description'].head(5).tolist()
+                result['intent'] = 'conversational'
+                result['reply'] = f"I can see {len(self.boq_df)} items in the BOQ. Examples include: " + ", ".join(samples)
+                return result
+
+        # 3. Change Qty
         qty_match = re.search(r'(?:quantity|qty) of (.+) to (\d+)', text)
         if qty_match:
             result['intent'] = 'change_qty'
@@ -76,7 +133,7 @@ class MLModel:
             result['quantity'] = float(qty_match.group(2))
             return result
 
-        # Regex for Material/Spec Change: "Change X to Y"
+        # 4. Change Spec
         change_match = re.search(r'change (.+) to (.+)', text)
         if change_match:
             result['intent'] = 'change_spec'
@@ -84,7 +141,7 @@ class MLModel:
             result['new_material'] = change_match.group(2).strip()
             return result
             
-        # Regex for Delay: "Delay [Task] by [X] days"
+        # 5. Delay
         delay_match = re.search(r'delay (.+) by (\d+) days?', text)
         if delay_match:
             result['intent'] = 'delay'

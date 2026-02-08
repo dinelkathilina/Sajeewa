@@ -1,6 +1,6 @@
 import React, { useState } from "react";
 import axios from "axios";
-import { Send, Bot } from "lucide-react";
+import { Send, Bot, Download } from "lucide-react";
 
 interface Msg {
   sender: "user" | "bot";
@@ -67,6 +67,27 @@ const Chat: React.FC<ChatProps> = ({ projectId }) => {
     }
   };
 
+  const downloadPDF = async (proposal: any) => {
+    try {
+      const response = await axios.post(
+        "http://localhost:8000/generate-pdf",
+        proposal,
+        {
+          responseType: "blob",
+        },
+      );
+      const url = window.URL.createObjectURL(new Blob([response.data]));
+      const link = document.createElement("a");
+      link.href = url;
+      link.setAttribute("download", "Variation_Proposal.pdf");
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+    } catch (err) {
+      alert("Failed to generate PDF.");
+    }
+  };
+
   return (
     <div className="flex flex-col h-[600px] bg-white rounded-xl shadow-sm border border-gray-100 overflow-hidden">
       <div className="bg-gray-50 p-4 border-b border-gray-100 font-medium text-gray-700 flex items-center gap-2">
@@ -108,6 +129,12 @@ const Chat: React.FC<ChatProps> = ({ projectId }) => {
                     {m.proposal.cost_impact}
                   </span>
                 </div>
+                <button
+                  onClick={() => downloadPDF(m.proposal)}
+                  className="mt-3 w-full bg-yellow-600 text-white py-1.5 rounded-md text-xs font-semibold hover:bg-yellow-700 transition-colors flex items-center justify-center gap-1.5"
+                >
+                  <Download className="w-3.5 h-3.5" /> Download PDF Proposal
+                </button>
               </div>
             )}
           </div>

@@ -17,7 +17,6 @@ class CostEngine:
         self.ml_model.fit_boq(items)
 
     def load_boq(self, file_path, project_id):
-        # ... (same as before) ...
         try:
             df = pd.read_excel(file_path)
             df.columns = [c.lower() for c in df.columns]
@@ -59,13 +58,6 @@ class CostEngine:
             return 0
 
     def load_rate_breakdown(self, file_path, project_id):
-        # ... (Same as before) ...
-        return super_load_rate_breakdown(file_path, project_id) # Placeholder to keep existing logic
-        # For brevity, I am not repeating the whole function if unchanged, 
-        # but since I am replacing the whole file content or large chunk, I must provide it.
-        # I'll rely on the existing load_rate_breakdown implementation logic.
-        # Wait, I need to provide the full content for the replacement range.
-        # To avoid error, I will re-implement load_rate_breakdown here.
         try:
             df = pd.read_excel(file_path)
             df.columns = [c.lower() for c in df.columns]
@@ -147,7 +139,39 @@ class TimeEngine:
 
     def parse_schedule(self, file_path):
         if file_path.endswith('.xml'): return self._parse_msp_xml(file_path)
+        if file_path.endswith('.xlsx'): return self._parse_msp_excel(file_path)
         return 0
+
+    def _parse_msp_excel(self, file_path):
+        try:
+            df = pd.read_excel(file_path)
+            df.columns = [c.lower() for c in df.columns]
+            
+            # Simple Column Mapping
+            col_map = {
+                'id': next((c for c in df.columns if 'id' in c or 'uid' in c), None),
+                'name': next((c for c in df.columns if 'name' in c or 'task' in c), None),
+                'duration': next((c for c in df.columns if 'dur' in c), None),
+                'predecessors': next((c for c in df.columns if 'pred' in c), None)
+            }
+            
+            for _, row in df.iterrows():
+                t_id = str(row.get(col_map['id'])) if col_map['id'] else str(_)
+                t_name = str(row.get(col_map['name'], f"Task {t_id}"))
+                duration = float(row.get(col_map['duration'], 0) or 0)
+                
+                self.graph.add_node(t_id, name=t_name, duration=duration)
+                
+                preds = str(row.get(col_map['predecessors'], ""))
+                if preds and preds != "nan":
+                    # Assume comma or semicolon separated IDs
+                    for p in preds.replace(';', ',').split(','):
+                        p = p.strip()
+                        if p: self.graph.add_edge(p, t_id)
+            return len(self.graph.nodes)
+        except Exception as e:
+            print(f"Error parsing Excel Schedule: {e}")
+            return 0
 
     def _parse_msp_xml(self, file_path):
         try:

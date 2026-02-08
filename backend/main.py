@@ -5,8 +5,13 @@ import uvicorn
 import shutil
 import pydantic
 import os
+from datetime import datetime
 from .database import engine, init_db, SessionLocal
 from sqlalchemy.orm import Session
+from dotenv import load_dotenv
+
+# Load .env
+load_dotenv()
 
 # Initialize DB
 init_db()
@@ -35,7 +40,7 @@ def read_root():
     return {"message": "Construction Variation Chatbot API is running"}
 
 from .engine import CostEngine, TimeEngine
-from .database import Project
+from .database import Project, BOQItem
 
 @app.post("/upload/files")
 async def upload_files(
@@ -90,44 +95,50 @@ async def chat(request: ChatRequest, db: Session = Depends(get_db)):
     
     # Parse Instruction
     parsed = cost_engine.ml_model.parse_instruction(request.message)
+    print(f"Parsed Intent: {parsed.get('intent')} | Input: {request.message}")
     
-    response_text = "I didn't understand that command. Try 'Change [Item] to [New Material]'."
+    if not parsed or parsed.get('intent') == 'unknown':
+        return {"reply": "I couldn't quite follow that. Try saying 'Change [Item] to [New Material]' or 'Show items'.", "proposal": None}
+
+    response_text = "I didn't understand that command."
     proposal_data = None
     
-    if parsed['intent'] == 'change_spec':
-        # ... (Existing Change Spec Logic) ...
-        # [I will keep the existing logic and just append the else if block for delay]
-        # BUT replace_file_content replaces the whole block. I must be careful.
-        # Since I cannot see the full file content easily in my head, I will assume the previous content.
-        # Wait, I can see it from previous turns.
-        
+    if parsed['intent'] == 'conversational':
+        return {"reply": parsed.get('reply', "I'm ready to help with your variation."), "proposal": None}
+
+    if parsed['intent'] == 'change_spec' or parsed['intent'] == 'change_qty':
         old_desc = parsed['description']
-        new_mat = parsed['new_material']
+        new_mat = parsed.get('new_material')
         
         # Find item in BOQ
         item_ref = cost_engine.ml_model.find_similar_item(old_desc)
         
         if item_ref:
             original_rate = item_ref['rate']
-            new_rate = cost_engine.calculate_new_rate(new_mat, original_rate, 100.0, 0.05, 50.0)
+            
+            if parsed['intent'] == 'change_spec':
+                new_rate = cost_engine.calculate_new_rate(new_mat, original_rate, 100.0, 0.05, 50.0)
+                response_text = f"I found '{item_ref['description']}' in the BOQ. Evaluation suggests a Star Rate for '{new_mat}'."
+            else:
+                new_rate = original_rate
+                response_text = f"Updating quantity for '{item_ref['description']}'."
+
             diff = new_rate - original_rate
             impact = diff * item_ref.get('quantity', 0)
-            
-            response_text = (
-                f"I found item '{item_ref['description']}' (Rate: {original_rate}). "
-                f"Evaluation suggests a Star Rate for '{new_mat}'."
-            )
             
             proposal_data = {
                 "item_id": item_ref['id'],
                 "original_item": item_ref['description'],
-                "new_item": new_mat,
+                "new_item": new_mat or item_ref['description'],
                 "original_rate": original_rate,
                 "new_rate": round(new_rate, 2),
                 "cost_impact": round(impact, 2)
             }
         else:
-            response_text = f"I could not find '{old_desc}' in the BOQ."
+            # Suggest items to help the user
+            all_items = cost_engine.db.query(BOQItem).filter(BOQItem.project_id == request.project_id).limit(5).all()
+            suggestions = ", ".join([i.description for i in all_items])
+            response_text = f"I couldn't find '{old_desc}' in the BOQ. Did you mean one of these: {suggestions}?"
 
     elif parsed['intent'] == 'delay':
         # Time Impact Analysis
@@ -148,7 +159,7 @@ async def chat(request: ChatRequest, db: Session = Depends(get_db)):
         import os
         if os.path.exists("uploaded_files"):
             for f in os.listdir("uploaded_files"):
-                if f.endswith(".xml"):
+                if f.endswith(".xml") or "plan" in f.lower() or "schedule" in f.lower():
                     schedule_path = os.path.join("uploaded_files", f)
                     break
         
@@ -178,10 +189,15 @@ async def chat(request: ChatRequest, db: Session = Depends(get_db)):
         "proposal": proposal_data
     }
 
-    return {
-        "reply": response_text,
-        "proposal": proposal_data
-    }
+from .pdf_utils import PDFGenerator
+from fastapi.responses import FileResponse
+
+@app.post("/generate-pdf")
+async def generate_pdf(request: dict):
+    # For now, just a temporary file path
+    output_path = "variation_proposal.pdf"
+    PDFGenerator.generate_variation_proposal(request, output_path)
+    return FileResponse(output_path, media_type="application/pdf", filename="Variation_Proposal.pdf")
 
 if __name__ == "__main__":
     uvicorn.run("backend.main:app", host="0.0.0.0", port=8000, reload=True)
