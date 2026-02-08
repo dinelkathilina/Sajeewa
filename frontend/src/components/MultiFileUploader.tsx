@@ -50,10 +50,12 @@ const MultiFileUploader: React.FC<UploaderProps> = ({ onUploadSuccess }) => {
     label,
     file,
     setFile,
+    accept,
   }: {
     label: string;
     file: File | null;
     setFile: (f: File) => void;
+    accept: string;
   }) => (
     <div className="border border-gray-300 p-4 rounded-lg flex flex-col items-center justify-center bg-gray-50 hover:bg-white transition-colors">
       <label className="cursor-pointer flex flex-col items-center">
@@ -62,7 +64,9 @@ const MultiFileUploader: React.FC<UploaderProps> = ({ onUploadSuccess }) => {
         ) : (
           <Upload className="text-gray-400 mb-2" />
         )}
-        <span className="text-sm font-medium text-gray-700">{label}</span>
+        <span className="text-sm font-medium text-gray-700 text-center">
+          {label}
+        </span>
         <span className="text-xs text-gray-500 mt-1">
           {file ? file.name : "Click to select"}
         </span>
@@ -70,7 +74,7 @@ const MultiFileUploader: React.FC<UploaderProps> = ({ onUploadSuccess }) => {
           type="file"
           className="hidden"
           onChange={(e) => e.target.files && setFile(e.target.files[0])}
-          accept=".csv"
+          accept={accept}
         />
       </label>
     </div>
@@ -83,16 +87,23 @@ const MultiFileUploader: React.FC<UploaderProps> = ({ onUploadSuccess }) => {
       </h3>
 
       <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
-        <FileInput label="BOQ File" file={boqFile} setFile={setBoqFile} />
         <FileInput
-          label="Rate Breakdown"
+          label="BOQ File (Excel)"
+          file={boqFile}
+          setFile={setBoqFile}
+          accept=".xlsx,.xls"
+        />
+        <FileInput
+          label="Rate Breakdown (CSV)"
           file={breakdownFile}
           setFile={setBreakdownFile}
+          accept=".csv"
         />
         <FileInput
           label="Schedule (CSV/XML)"
           file={scheduleFile}
           setFile={setScheduleFile}
+          accept=".csv,.xml"
         />
       </div>
 

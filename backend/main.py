@@ -97,19 +97,19 @@ class ChatRequest(pydantic.BaseModel):
 @app.post("/chat")
 async def chat(request: ChatRequest, db: Session = Depends(get_db)):
     cost_engine = CostEngine(db)
-    # Ensure model is trained on this project (optimization: cache this)
-    # 1. Get Context (Search for relevant items first to help AI)
+    # 1. Train and Get Context (Search for relevant items using ML similarity)
+    cost_engine.train_model(request.project_id)
+    
     project = db.query(Project).filter(Project.id == request.project_id).first()
     proj_name = project.name if project else "Unknown Project"
     
-    # Simple keyword search for relevant items to provide as context
-    search_query = request.message.split()[-1]
-    relevant_items = db.query(BOQItem).filter(BOQItem.project_id == request.project_id).filter(BOQItem.description.like(f"%{search_query}%")).limit(10).all()
-    if not relevant_items:
-        relevant_items = db.query(BOQItem).filter(BOQItem.project_id == request.project_id).limit(10).all()
-    
+    # Use ML model to find top 15 most relevant items for the context
+    relevant_matches = cost_engine.ml_model.find_similar_item(request.message, top_n=15)
+    if not isinstance(relevant_matches, list):
+        relevant_matches = [relevant_matches] if relevant_matches else []
+        
     context_str = f"PROJECT NAME: {proj_name}\n"
-    context_str += "\n".join([f"- {i.description} (Rate: {i.rate}, Qty: {i.quantity})" for i in relevant_items])
+    context_str += "\n".join([f"- {i['description']} (Rate: {i['rate']}, Qty: {i['quantity']})" for i in relevant_matches if i])
 
     # 2. Parse/Reason with Context
     ai_result = cost_engine.ml_model.parse_instruction(request.message, project_context=context_str)
@@ -127,26 +127,13 @@ async def chat(request: ChatRequest, db: Session = Depends(get_db)):
         desc_query = cmd.get('description')
         
         if intent in ['change_spec', 'change_qty']:
-            item_ref = cost_engine.ml_model.find_similar_item(desc_query)
-            if item_ref:
-                original_rate = item_ref['rate']
-                if intent == 'change_spec':
-                    new_mat = cmd.get('new_material', 'New Material')
-                    new_rate = cost_engine.calculate_new_rate(new_mat, original_rate, 100.0, 0.05, 50.0)
-                else:
-                    new_rate = original_rate
-
-                diff = new_rate - original_rate
-                impact = diff * item_ref.get('quantity', 0)
-                
-                proposal_data = {
-                    "item_id": item_ref['id'],
-                    "original_item": item_ref['description'],
-                    "new_item": cmd.get('new_material') or item_ref['description'],
-                    "original_rate": original_rate,
-                    "new_rate": round(new_rate, 2),
-                    "cost_impact": round(impact, 2)
-                }
+            qty_change = cmd.get('quantity', 0) if intent == 'change_qty' else 0
+            new_mat = cmd.get('new_material') if intent == 'change_spec' else None
+            
+            variation_result = cost_engine.evaluate_variation(desc_query, new_material=new_mat, qty_change=qty_change)
+            
+            if variation_result:
+                proposal_data = variation_result
             else:
                 response_text += f"\n(Note: I couldn't find an exact match for '{desc_query}' in the database to calculate costs.)"
 

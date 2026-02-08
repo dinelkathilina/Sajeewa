@@ -13,68 +13,138 @@ class CostEngine:
         self.ml_model = MLModel()
 
     def train_model(self, project_id):
+        # Optimization: Only retrain if the project changed or model is empty
+        if self.ml_model.boq_df is not None and not self.ml_model.boq_df.empty:
+            # Check a sample item or count? For now, we assume if boq_df exists, 
+            # it might be the same. A better check would be project_id matching.
+            return
+            
         items = self.db.query(BOQItem).filter(BOQItem.project_id == project_id).all()
         self.ml_model.fit_boq(items)
 
     def load_boq(self, file_path, project_id):
         try:
-            # Read CSV with robust encoding handling
-            try:
-                df = pd.read_csv(file_path, encoding='utf-8', header=None)
-            except UnicodeDecodeError:
-                df = pd.read_csv(file_path, encoding='latin1', header=None)
-
-            # Find the header row (look for 'desc' or 'qty' in any cell)
-            header_idx = 0
-            for i, row in df.head(30).iterrows():
-                row_str = " ".join(str(v).lower() for v in row if pd.notna(v))
-                if 'desc' in row_str or 'qty' in row_str:
-                    header_idx = i
-                    break
-            
-            # Re-read with correct header
-            df = pd.read_csv(file_path, encoding='utf-8', skiprows=header_idx) if header_idx > 0 else df
-            df.columns = [str(c).strip().lower() for c in df.columns]
-            
-            # Smart Column Mapping
-            def find_col(keywords):
-                for c in df.columns:
-                    if any(k in c for k in keywords):
-                        return c
-                return None
-
-            col_map = {
-                'item': find_col(['item', 'ref', 'no']),
-                'description': find_col(['description', 'desc', 'work']),
-                'unit': find_col(['unit']),
-                'qty': find_col(['qty', 'quantity']),
-                'rate': find_col(['rate', 'price']),
-                'amount': find_col(['amount', 'total'])
-            }
-
             items = []
-            for _, row in df.iterrows():
-                # Skip empty descriptions
-                desc_col = col_map['description']
-                if not desc_col or pd.isna(row[desc_col]): continue
+            
+            # Helper to clean numeric values
+            def clean_num(val):
+                if pd.isna(val) or val == '': return 0.0
+                try:
+                    s = str(val).replace(',', '').replace('rs.', '').replace('rs', '').strip()
+                    # Handle parenthesis for negative if any or space-separated numbers
+                    s = s.split()[0] if s else '0'
+                    return float(s)
+                except: return 0.0
 
-                # Clean numeric values (strip commas, handle Rs.)
-                def clean_num(val):
-                    if pd.isna(val): return 0.0
-                    try:
-                        s = str(val).replace(',', '').replace('rs.', '').replace('rs', '').strip()
-                        return float(s)
-                    except: return 0.0
+            # Logic for Excel (.xlsx)
+            if file_path.lower().endswith('.xlsx') or file_path.lower().endswith('.xls'):
+                xl = pd.ExcelFile(file_path)
+                for sheet_name in xl.sheet_names:
+                    # Skip summary/application sheets if named specifically
+                    if sheet_name.lower() in ['application', 'summary', 'mat @ site']: continue
+                    
+                    df_raw = pd.read_excel(xl, sheet_name=sheet_name, header=None)
+                    
+                    # Find header row - search up to 40 rows
+                    header_idx = -1
+                    for i, row in df_raw.head(40).iterrows():
+                        row_str = " ".join(str(v).lower() for v in row if pd.notna(v))
+                        # Aggressive keywords
+                        if any(k in row_str for k in ['desc', 'qty', 'unit', 'rate', 'amount', 'item']):
+                            header_idx = i
+                            break
+                    
+                    if header_idx != -1:
+                        df = pd.read_excel(xl, sheet_name=sheet_name, skiprows=header_idx)
+                        df.columns = [str(c).strip().lower() for c in df.columns]
+                    elif 'bill' in sheet_name.lower():
+                        # Fallback: Assume row 10-15 might contain headers if not found, 
+                        # or just assume position if it's a Bill sheet
+                        df = df_raw.iloc[10:].copy()
+                        df.columns = [f"col_{i}" for i in range(len(df.columns))]
+                    else:
+                        continue
+                    
+                    # Smart Column Mapping
+                    def find_col(keywords, cols):
+                        for c in cols:
+                            if any(k in c for k in keywords):
+                                return c
+                        return None
 
-                items.append(BOQItem(
-                    project_id=project_id,
-                    item_number=str(row.get(col_map['item'], '')),
-                    description=str(row[desc_col]),
-                    unit=str(row.get(col_map['unit'], '')),
-                    quantity=clean_num(row.get(col_map['qty'], 0)),
-                    rate=clean_num(row.get(col_map['rate'], 0)),
-                    amount=clean_num(row.get(col_map['amount'], 0))
-                ))
+                    cols = df.columns
+                    col_map = {
+                        'item': find_col(['item', 'ref', 'no'], cols) or (cols[0] if len(cols) > 0 else None),
+                        'description': find_col(['description', 'desc', 'work'], cols) or (cols[1] if len(cols) > 1 else None),
+                        'unit': find_col(['unit', ' un'], cols) or (cols[2] if len(cols) > 2 else None),
+                        'qty': find_col(['qty', 'quantity', 'quantity'], cols) or (cols[3] if len(cols) > 3 else None),
+                        'rate': find_col(['rate', 'price'], cols) or (cols[4] if len(cols) > 4 else None),
+                        'amount': find_col(['amount', 'total', 'total amount'], cols) or (cols[len(cols)-1] if len(cols) > 0 else None)
+                    }
+
+                    for _, row in df.iterrows():
+                        desc_col = col_map['description']
+                        if not desc_col or pd.isna(row[desc_col]): continue
+                        
+                        desc_val = str(row[desc_col]).strip()
+                        # Skip header repetitions or empty rows
+                        if not desc_val or desc_val.lower() in ['description', 'desc', 'work']: continue
+                        if len(desc_val) < 3: continue
+
+                        items.append(BOQItem(
+                            project_id=project_id,
+                            item_number=str(row.get(col_map['item'], '')),
+                            description=desc_val,
+                            unit=str(row.get(col_map['unit'], '')),
+                            quantity=clean_num(row.get(col_map['qty'], 0)),
+                            rate=clean_num(row.get(col_map['rate'], 0)),
+                            amount=clean_num(row.get(col_map['amount'], 0))
+                        ))
+
+            # Backward compatibility / Fallback for CSV
+            else:
+                try:
+                    df = pd.read_csv(file_path, encoding='utf-8', header=None)
+                except UnicodeDecodeError:
+                    df = pd.read_csv(file_path, encoding='latin1', header=None)
+
+                header_idx = -1
+                for i, row in df.head(30).iterrows():
+                    row_str = " ".join(str(v).lower() for v in row if pd.notna(v))
+                    if 'desc' in row_str or 'qty' in row_str:
+                        header_idx = i
+                        break
+                
+                df = pd.read_csv(file_path, encoding='utf-8', skiprows=header_idx) if header_idx >= 0 else df
+                df.columns = [str(c).strip().lower() for c in df.columns]
+                
+                def find_col(keywords, cols):
+                    for c in cols:
+                        if any(k in c for k in keywords):
+                            return c
+                    return None
+
+                col_map = {
+                    'item': find_col(['item', 'ref', 'no'], df.columns),
+                    'description': find_col(['description', 'desc', 'work'], df.columns),
+                    'unit': find_col(['unit'], df.columns),
+                    'qty': find_col(['qty', 'quantity'], df.columns),
+                    'rate': find_col(['rate', 'price'], df.columns),
+                    'amount': find_col(['amount', 'total'], df.columns)
+                }
+
+                for _, row in df.iterrows():
+                    desc_col = col_map['description']
+                    if not desc_col or pd.isna(row[desc_col]): continue
+                    items.append(BOQItem(
+                        project_id=project_id,
+                        item_number=str(row.get(col_map['item'], '')),
+                        description=str(row[desc_col]),
+                        unit=str(row.get(col_map['unit'], '')),
+                        quantity=clean_num(row.get(col_map['qty'], 0)),
+                        rate=clean_num(row.get(col_map['rate'], 0)),
+                        amount=clean_num(row.get(col_map['amount'], 0))
+                    ))
             
             if items:
                 self.db.add_all(items)
@@ -83,6 +153,8 @@ class CostEngine:
             return len(items)
         except Exception as e:
             print(f"Error loading BOQ: {e}")
+            import traceback
+            traceback.print_exc()
             return 0
 
     def load_rate_breakdown(self, file_path, project_id):
@@ -162,6 +234,48 @@ class CostEngine:
             traceback.print_exc()
             return 0
 
+    def evaluate_variation(self, description_query, new_material=None, qty_change=0):
+        """
+        Comprehensive variation analysis combining database search and FIDIC logic.
+        """
+        # 1. Find the item
+        similar_item = self.ml_model.find_similar_item(description_query)
+        if not similar_item:
+            return None
+
+        original_rate = similar_item.get('rate', 0.0)
+        original_qty = similar_item.get('quantity', 0.0)
+        
+        # 2. Determine New Rate (FIDIC 12.3)
+        # We assume some defaults for change % if not fully specified
+        qty_change_pct = (qty_change / original_qty * 100.0) if original_qty > 0 else 100.0
+        amt_change_pct = (qty_change * original_rate) / 1000000.0 # Hypothetical threshold
+        
+        if new_material:
+            # If material changed, it's likely a Star Rate
+            new_rate = self.derive_star_rate(new_material)
+        else:
+            # Check FIDIC 12.3 thresholds
+            new_rate = self.calculate_new_rate(
+                similar_item['description'], 
+                original_rate, 
+                qty_change_pct, 
+                amt_change_pct, 
+                10.0 # Unit cost change pct threshold
+            )
+
+        impact = (new_rate * (original_qty + qty_change)) - (original_rate * original_qty)
+        
+        return {
+            "item_id": similar_item['id'],
+            "original_item": similar_item['description'],
+            "new_item": new_material or similar_item['description'],
+            "original_rate": original_rate,
+            "new_rate": round(new_rate, 2),
+            "cost_impact": round(impact, 2),
+            "is_star_rate": new_rate != original_rate
+        }
+
     def calculate_new_rate(self, item_description, original_rate, qty_change_pct, amt_change_pct, unit_cost_change_pct):
         """
         Implements FIDIC 12.3 logic to determine if a new rate is applicable.
@@ -176,33 +290,18 @@ class CostEngine:
 
     def derive_star_rate(self, description):
         """
-        Derives a new rate using ML similarity search.
+        Derives a new rate using ML similarity search or breakdown analysis.
         """
         similar_item = self.ml_model.find_similar_item(description)
         
         if similar_item:
-            base_rate = similar_item.get('rate', 0)
-            similar_desc = similar_item.get('description', '')
+            # Try to get detailed breakdown if it exists
+            breakdown = self.db.query(RateBreakdown).filter(RateBreakdown.item_ref == similar_item.get('item_number')).first()
+            if breakdown:
+                return breakdown.total_rate
+            return similar_item.get('rate', 0.0)
             
-            # Predict productivity factor
-            p_new = self.ml_model.predict_productivity(description)
-            p_old = self.ml_model.predict_productivity(similar_desc)
-            if p_old == 0: p_old = 1
-            
-            prod_factor = p_new / p_old
-            
-            # Apply factor to assumed Labor portion (30%)
-            labor_portion = base_rate * 0.30
-            material_portion = base_rate * 0.70
-            
-            # Cost Factor = p_old / p_new
-            cost_factor = p_old / p_new if p_new > 0 else 1.0
-            
-            adjusted_labor = labor_portion * cost_factor
-            
-            return material_portion + adjusted_labor
-            
-        return 0.0 # Need external data
+        return 0.0 # Fallback
 
 class TimeEngine:
     def __init__(self):
