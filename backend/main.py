@@ -403,24 +403,53 @@ async def chat(request: ChatRequest, db: DBSession = Depends(get_db)):
         # Get conversation history
         history = session_manager.get_conversation_history(session.id, limit=10)
         
-        # Train model and get context
+        # 2. Enrich Context for AI
         cost_engine.train_model(request.project_id)
+        session_metadata = session.session_metadata or {}
+        collected_details = session_metadata.get('collected_details', {})
+        
+        # Build a search query from current message + key context keywords
+        search_query = request.message
+        
+        # If message is short (e.g. just a number), use previously mentioned items
+        if len(request.message.split()) < 4:
+            affected_items = collected_details.get('affected_items', [])
+            if affected_items:
+                search_query += " " + " ".join(affected_items)
+            
+            # Also look at last few user messages for keywords
+            user_history = [m['content'] for m in history if m['role'] == 'user'][-3:]
+            search_query += " " + " ".join(user_history)
+
+        # Get relevant BOQ items based on enriched query
+        relevant_matches = cost_engine.ml_model.find_similar_item(search_query, top_n=20)
+        if not isinstance(relevant_matches, list):
+            relevant_matches = [relevant_matches] if relevant_matches else []
         
         project = db.query(Project).filter(Project.id == request.project_id).first()
         proj_name = project.name if project else "Unknown Project"
         
-        # Get relevant BOQ items
-        relevant_matches = cost_engine.ml_model.find_similar_item(request.message, top_n=15)
-        if not isinstance(relevant_matches, list):
-            relevant_matches = [relevant_matches] if relevant_matches else []
+        context_str = f"PROJECT NAME: {proj_name}\n"
+        context_str += "AVAIALBLE BOQ ITEMS (Top Matches):\n"
+        context_str += "\n".join([f"- {i['description']} (Ref: {i['item_number']}, Rate: {i['rate']}, Qty: {i['quantity']})" for i in relevant_matches if i])
         
-        context_str = f"PROJECT NAME: {proj_name}\\n"
-        context_str += "\\n".join([f"- {i['description']} (Rate: {i['rate']}, Qty: {i['quantity']})" for i in relevant_matches if i])
+        # Get relevant activities
+        from .database import Activity
+        activities = db.query(Activity).filter(Activity.project_id == request.project_id).all()
+        # Filter for activities relevant to the current search query
+        # Since we have few activities, we can just list top 10 relevant or similar
+        # For a simple demo/test, just list activities that mention keywords
+        keywords = search_query.lower().split()
+        relevant_activities = [a for a in activities if any(k in a.name.lower() for k in keywords)]
         
-        # Get session metadata for workflow state
-        session_metadata = session.session_metadata or {}
+        context_str += "\n\nAVAIALBLE ACTIVITIES (Top Matches):\n"
+        if relevant_activities:
+            context_str += "\n".join([f"- {a.name} (Duration: {a.duration}d, Start: Day {a.start_day}, Critical: {a.is_critical})" for a in relevant_activities[:10]])
+        else:
+            # Fallback to listing a few activities
+            context_str += "\n".join([f"- {a.name} (Duration: {a.duration}d, Critical: {a.is_critical})" for a in activities[:5]])
         
-        # Parse instruction with workflow support
+        # 3. Parse instruction with workflow support
         ai_result = cost_engine.ml_model.parse_instruction(
             request.message,
             project_context=context_str,
@@ -448,22 +477,38 @@ async def chat(request: ChatRequest, db: DBSession = Depends(get_db)):
             # Collecting variation details
             extracted_data = ai_result.get('extracted_data', {})
             current_details = session_metadata.get('collected_details', {})
-            current_details.update(extracted_data)
+            current_details.update({k: v for k, v in extracted_data.items() if v is not None})
+            
+            # Reset complete if AI wants to ask more, or set if AI says so
+            is_complete = extracted_data.get('complete', False)
             
             session_manager.update_session_metadata(session.id, {
                 "collected_details": current_details
             })
-        
-        elif workflow_state == "requesting_files":
-            # Mark that files have been requested
-            proceed = ai_result.get('proceed_to_evaluation', False)
-            current_details = session_metadata.get('collected_details', {})
-            current_details['additional_files_asked'] = True
             
-            session_manager.update_session_metadata(session.id, {
-                "collected_details": current_details,
-                "proceed_to_evaluation": proceed
-            })
+            if is_complete:
+                # Trigger full evaluation
+                print(f"DEBUG: Triggering full evaluation for session {session.id}")
+                eval_result = cost_engine.evaluate_variation_full(
+                    current_details,
+                    request.project_id,
+                    session.id
+                )
+                
+                if eval_result:
+                    proposal_data = eval_result
+                    # Generate PDF report
+                    from .pdf_utils import PDFGenerator
+                    pdf_gen = PDFGenerator()
+                    output_path = f"variation_proposal_{eval_result['variation_id']}.pdf"
+                    # In a real app, this would be a proper storage path
+                    try:
+                        pdf_path = pdf_gen.generate_variation_proposal(eval_result, output_path)
+                        proposal_data['pdf_url'] = f"http://localhost:8000/download/{os.path.basename(pdf_path)}"
+                        response_text += f"\n\nEvaluation complete! I've calculated a cost impact of ${eval_result['cost_impact']:,.2f} and a time impact of {eval_result['time_impact']} days. You can download the proposal report here: {proposal_data['pdf_url']}"
+                    except Exception as e:
+                        print(f"PDF Generation failed: {e}")
+                        response_text += "\n\nEvaluation complete, but I couldn't generate the PDF report. You can review the details below."
         
         elif workflow_state == "evaluation":
             # Execute evaluation command
@@ -660,6 +705,22 @@ async def generate_pdf(request: dict):
         import traceback
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/download/{filename}")
+async def download_file(filename: str):
+    """Serve generated PDF files for download"""
+    if not filename.endswith(".pdf"):
+        raise HTTPException(status_code=400, detail="Only PDF downloads allowed")
+    
+    file_path = filename # Assuming it's in the CWD as per current logic
+    if not os.path.exists(file_path):
+        raise HTTPException(status_code=404, detail="File not found")
+        
+    return FileResponse(
+        file_path,
+        media_type="application/pdf",
+        filename=filename
+    )
 
 # ============================================================================
 # MAIN

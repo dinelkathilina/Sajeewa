@@ -204,12 +204,27 @@ MISSING DETAILS: {missing_fields}
 
 Instructions:
 1. Check the user's latest query for any of the missing details.
-2. If any information is found, extract it and update the JSON.
-3. Your reply should:
-   - Acknowledge information provided.
+2. IMPORTANT - EXPERT QS REASONING (FIDIC 12.3):
+   - **Scenario: Quantity Changes**:
+     - If quantity change is > 10% of BOQ quantity, mention: "Since this is a significant change (>10%), we should consider a new rate derivation per FIDIC 12.3."
+     - If change is < 10%, state: "This change is below the 10% threshold, so the original BOQ rate normally applies."
+     - If quantity is reduced to 0, treat it as an OMISSION (Type 4).
+   - **Scenario: Subtitutions**:
+     - If the user is replacing item A with item B, treat it as a two-step process: (1) Omission of A and (2) Addition of B.
+   - **Scenario: Time Impact (EOT)**:
+     - Review the "AVAIALBLE ACTIVITIES" in context.
+     - If the affected item (e.g., Turfing) is related to an activity (e.g., Landscaping), mention: "This item is linked to [Activity Name]. Since it is [on/not on] the Critical Path, this might affect the project completion by approximately [X] days."
+   - **Scenario: Disputes/BSR**:
+     - If the user disagrees with the BOQ rate, suggest: "I can derive a new rate using Market Data/BSR. Please upload the relevant documents or I can search recent similar items."
+3. IMPORTANT - PROACTIVE ITEM SELECTION:
+   - Identify items/activities from context and AUTO-FILL codes/quantities.
+   - Ask: "I found [Item] in the BOQ. Shall I use this for the evaluation?" instead of asking for the code.
+4. Your reply should:
+   - Be professional, citing FIDIC principles where appropriate.
+   - If an item was identified, confirm its details (Item Code, Rate, Qty) with the user.
    - Ask for the NEXT missing detail from the list: {missing_fields}.
-   - Be professional and helpful.
-4. If ALL details are provided (or the user says they have no more info), set "complete": true in extracted_data.
+   - If all details are present, inform the user you are ready to generate the full evaluation and PDF.
+5. If ALL details are provided (or the user says they have no more info), set "complete": true in extracted_data.
 
 MANDATORY JSON Output Format:
 {{
@@ -217,7 +232,7 @@ MANDATORY JSON Output Format:
     "workflow_state": "collecting_details",
     "extracted_data": {{
         "affected_items": ["item description 1"] or null,
-        "quantity_changes": "description/values" or null,
+        "quantity_changes": "Record either NEW TOTAL (e.g., '200m2') or DELTA (e.g., '+50m2'). Specify which." or null,
         "specification_changes": "description" or null,
         "method_changes": "description" or null,
         "location_changes": "description" or null,
@@ -333,4 +348,17 @@ Only return JSON.
             except Exception as e:
                 print(f"ERROR: Groq failed: {e}")
 
-        return {'reply': "AI services are currently offline.", 'workflow_state': 'error', 'command': None}
+        return {
+            'reply': "I'm having trouble connecting to my knowledge base right now. Please try again in a moment.",
+            'workflow_state': 'collecting_details',
+            'extracted_data': {
+                'affected_items': None,
+                'quantity_changes': None,
+                'specification_changes': None,
+                'method_changes': None,
+                'location_changes': None,
+                'affected_activities': None,
+                'complete': False
+            },
+            'command': None
+        }

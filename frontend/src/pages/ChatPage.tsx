@@ -1,15 +1,15 @@
 import { useState, useEffect, useRef } from "react";
 import { useParams, useNavigate } from "react-router-dom";
 import { useApp } from "../context/AppContext";
-import { sendMessage, getSession } from "../services/api";
-import { Send, Loader, FileText, ArrowLeft } from "lucide-react";
+import { createSession, sendMessage, getSession } from "../services/api";
+import { Send, Loader, FileText, ArrowLeft, RotateCcw } from "lucide-react";
 
 const ChatPage = () => {
   const { sessionId } = useParams<{ sessionId: string }>();
   const navigate = useNavigate();
   const {
     currentProject,
-    currentSession,
+    setCurrentSession,
     messages,
     addMessage,
     setMessages,
@@ -23,7 +23,7 @@ const ChatPage = () => {
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    if (sessionId && !currentSession) {
+    if (sessionId) {
       loadSession();
     }
   }, [sessionId]);
@@ -38,6 +38,12 @@ const ChatPage = () => {
     setLoading(true);
     try {
       const session = await getSession(parseInt(sessionId));
+      setCurrentSession({
+        id: session.session_id,
+        session_key: session.session_key || "",
+        status: session.status,
+        created_at: session.created_at || new Date().toISOString(),
+      });
       if (session.conversation_history) {
         setMessages(session.conversation_history);
       }
@@ -102,6 +108,30 @@ const ChatPage = () => {
       handleSend();
     }
   };
+  const handleNewEvaluation = async () => {
+    if (!currentProject) return;
+
+    setLoading(true);
+    try {
+      const result = await createSession(currentProject.id);
+      if (result.session_id) {
+        setMessages([]);
+        setProposal(null);
+        setCurrentSession({
+          id: result.session_id,
+          session_key: result.session_key,
+          status: result.status,
+          created_at: new Date().toISOString(),
+        });
+        navigate(`/chat/${result.session_id}`);
+      }
+    } catch (err) {
+      console.error("Failed to reset evaluation:", err);
+      alert("Failed to start a new evaluation. Please try again.");
+    } finally {
+      setLoading(false);
+    }
+  };
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-gray-50 to-gray-100 flex flex-col">
@@ -128,7 +158,17 @@ const ChatPage = () => {
                 )}
               </div>
             </div>
-            <div className="flex items-center space-x-2">
+            <div className="flex items-center space-x-4">
+              <button
+                onClick={handleNewEvaluation}
+                disabled={loading}
+                className="flex items-center space-x-2 px-4 py-2 bg-gray-100 hover:bg-gray-200 text-gray-700 rounded-lg transition-colors disabled:opacity-50"
+              >
+                <RotateCcw
+                  className={`w-4 h-4 ${loading ? "animate-spin" : ""}`}
+                />
+                <span className="text-sm font-medium">New Evaluation</span>
+              </button>
               <span className="px-3 py-1 bg-green-100 text-green-800 rounded-full text-sm font-medium">
                 Active
               </span>

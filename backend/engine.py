@@ -401,6 +401,10 @@ class CostEngine:
         if new_material:
             # If material changed, it's likely a Star Rate
             new_rate, rate_source = self.derive_star_rate(new_material, project_id=similar_item.get('project_id'))
+            # Fallback to original rate if star rate derivation fails
+            if new_rate == 0.0:
+                new_rate = original_rate
+                rate_source = "Original Rate (Fallback)"
         else:
             # Check FIDIC 12.3 thresholds
             new_rate, rate_source = self.calculate_new_rate(
@@ -536,6 +540,100 @@ class CostEngine:
         variation.cost_impact = total_impact
         variation.updated_at = datetime.utcnow()
         self.db.commit()
+
+    def evaluate_variation_full(self, collected_details, project_id, session_id):
+        """
+        Processes a full variation evaluation based on collected details.
+        Details: {affected_items, quantity_changes, specification_changes, 
+                  method_changes, location_changes, affected_activities}
+        """
+        from .database import Variation, VariationDetail
+        
+        # 1. Create Variation record
+        variation = Variation(
+            project_id=project_id,
+            session_id=session_id,
+            description=f"Variation: {collected_details.get('specification_changes', 'New Variation')}",
+            status="Draft",
+            cost_impact=0.0,
+            time_impact=0
+        )
+        self.db.add(variation)
+        self.db.commit()
+        self.db.refresh(variation)
+        
+        total_cost_impact = 0.0
+        details_list = []
+        
+        # 2. Process Cost Impact for each affected item
+        affected_items = collected_details.get('affected_items', [])
+        if not isinstance(affected_items, list):
+            affected_items = [affected_items]
+            
+        for item_desc in affected_items:
+            # Find item in BOQ
+            similar = self.ml_model.find_similar_item(item_desc)
+            if not similar or similar.get('similarity', 0) < 0.6:
+                continue
+                
+            qty_change = 0.0
+            qty_info = str(collected_details.get('quantity_changes', "0")).lower()
+            try:
+                 import re
+                 # Find numbers
+                 match = re.search(r'([+-]?\d*\.?\d+)', qty_info)
+                 if match:
+                     val = float(match.group(1))
+                     # If "total" or "new" is mentioned, and original qty exists, calculate delta
+                     if any(k in qty_info for k in ['total', 'new', 'final']) and not any(k in qty_info for k in ['delta', 'increase', 'extra', 'add', 'decrease']):
+                         original_qty = similar.get('quantity', 0.0)
+                         qty_change = val - original_qty
+                     else:
+                         qty_change = val
+            except: pass
+            
+            # Evaluate using existing logic
+            eval_result = self.evaluate_variation(
+                item_desc, 
+                new_material=collected_details.get('specification_changes'),
+                qty_change=qty_change
+            )
+            
+            if eval_result:
+                detail = VariationDetail(
+                    variation_id=variation.id,
+                    boq_item_id=eval_result['item_id'],
+                    original_description=eval_result['original_item'],
+                    new_description=eval_result['new_item'],
+                    original_quantity=similar.get('quantity', 0),
+                    new_quantity=similar.get('quantity', 0) + qty_change,
+                    original_rate=eval_result['original_rate'],
+                    new_rate=eval_result['new_rate'],
+                    rate_source=eval_result['rate_source'],
+                    cost_impact=eval_result['cost_impact'],
+                    justification=f"Method: {collected_details.get('method_changes')}, Location: {collected_details.get('location_changes')}"
+                )
+                self.db.add(detail)
+                total_cost_impact += eval_result['cost_impact']
+                details_list.append(eval_result)
+
+        # 3. Process Time Impact
+        from .engine import TimeEngine
+        time_engine = TimeEngine(db_session=self.db)
+        time_impact = time_engine.evaluate_time_impact(collected_details, project_id)
+        
+        # 4. Update Variation Totals
+        variation.cost_impact = total_cost_impact
+        variation.time_impact = time_impact
+        variation.updated_at = datetime.utcnow()
+        self.db.commit()
+        
+        return {
+            "variation_id": variation.id,
+            "cost_impact": total_cost_impact,
+            "time_impact": time_impact,
+            "details": details_list
+        }
 
     def search_external_rates(self, description):
         """
@@ -1002,4 +1100,75 @@ class TimeEngine:
                        f"The delay exceeded the available float, resulting in EOT of {eot:.1f} days."
         else:
             return f"Activity '{activity_name}' has {total_float:.1f} days of float. " \
-                   f"The delay is absorbed within the float. No EOT required."
+                    f"The delay is absorbed within the float. No EOT required."
+
+    def evaluate_time_impact(self, collected_details, project_id):
+        """
+        Evaluate time impact (EOT) based on affected activities and duration adjustments.
+        """
+        from .database import Activity
+        
+        # 1. Load original schedule from DB
+        activities = self.db.query(Activity).filter(Activity.project_id == project_id).all()
+        if not activities:
+            return 0
+            
+        self.graph.clear()
+        for act in activities:
+            self.graph.add_node(act.activity_id, name=act.name, duration=act.duration or 0.0)
+            if act.predecessors:
+                # Handle semicolon or comma
+                preds_raw = act.predecessors.replace(';', ',')
+                for p in preds_raw.split(','):
+                    if p.strip():
+                        # Verify predecessor exists to avoid networkx errors
+                        if p.strip() in self.graph:
+                            self.graph.add_edge(p.strip(), act.activity_id)
+        
+        # 2. Baseline CPM
+        baseline_results = self.calculate_cpm_full()
+        baseline_duration = max([v['ef'] for v in baseline_results.values()]) if baseline_results else 0
+        
+        # 3. Apply Adjustments
+        affected_act_names = collected_details.get('affected_activities', [])
+        if not isinstance(affected_act_names, list):
+            affected_act_names = [affected_act_names]
+            
+        # Try to find a percentage change in quantity to apply to duration
+        qty_change_pct = 0.0
+        qty_info = str(collected_details.get('quantity_changes', "0"))
+        try:
+            import re
+            match = re.search(r'([+-]?\d*\.?\d+)', qty_info)
+            if match:
+                val = float(match.group(1))
+                # If they just said "10", we assume 10% for time estimation
+                qty_change_pct = val if val < 200 else (val / 100.0) 
+        except: pass
+        
+        applied_count = 0
+        for act_name in affected_act_names:
+            if not act_name: continue
+            # Simple keyword match to find activity in graph
+            best_match = None
+            for node_id, data in self.graph.nodes(data=True):
+                if act_name.lower() in str(data.get('name', '')).lower():
+                    best_match = node_id
+                    break
+            
+            if best_match:
+                orig_dur = self.graph.nodes[best_match].get('duration', 0)
+                # Naive duration adjustment: proportional to qty change
+                new_dur = orig_dur * (1 + (qty_change_pct / 100.0)) if qty_change_pct != 0 else orig_dur + 5
+                self.graph.nodes[best_match]['duration'] = new_dur
+                applied_count += 1
+                
+        # 4. Revised CPM
+        if applied_count > 0:
+            self.cpm_calculated = False
+            revised_results = self.calculate_cpm_full()
+            revised_duration = max([v['ef'] for v in revised_results.values()]) if revised_results else 0
+            eot_days = max(0, revised_duration - baseline_duration)
+            return int(eot_days)
+        
+        return 0
