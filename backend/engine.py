@@ -318,6 +318,29 @@ class CostEngine:
                 col0 = str(row[0]).strip() if pd.notna(row[0]) else ""
                 if col0 and any(char.isdigit() for char in col0) and '/' in col0:
                     # Save previous item if exists
+                    if current_ref and costs['total'] > 0:
+                        items.append({
+                            'item_ref': current_ref, 'description': current_desc,
+                            'material_cost': costs['mat'], 'labor_cost': costs['lab'],
+                            'plant_cost': costs['plant'], 'total_rate': costs['total']
+                        })
+                    
+                    # Start new item
+                    current_ref = col0
+                    current_desc = " ".join(row_list[1:]) if len(row_list) > 1 else ""
+                    costs = {'mat': 0.0, 'lab': 0.0, 'plant': 0.0, 'total': 0.0}
+                    continue
+
+                # 2. Categorize costs
+                if 'subtotal material' in row_str:
+                    costs['mat'] = clean_val(row_list[-1]) if row_list else 0.0
+                elif 'subtotal labor' in row_str:
+                    costs['lab'] = clean_val(row_list[-1]) if row_list else 0.0
+                elif 'subtotal plant' in row_str:
+                    costs['plant'] = clean_val(row_list[-1]) if row_list else 0.0
+                elif 'total' in row_str and 'rate' in row_str:
+                    costs['total'] = clean_val(row_list[-1]) if row_list else 0.0
+
             # Last item
             if current_ref and costs['total'] > 0:
                 items.append({
@@ -333,7 +356,7 @@ class CostEngine:
             traceback.print_exc()
             return 0
 
-    def evaluate_variation(self, description_query, new_material=None, qty_change=0):
+    def evaluate_variation(self, description_query, project_id, new_material=None, new_total_qty=0):
         """
         Comprehensive variation analysis combining database search and FIDIC logic.
         """
@@ -345,11 +368,14 @@ class CostEngine:
         original_rate = similar_item.get('rate', 0.0)
         original_qty = similar_item.get('quantity', 0.0)
         
+        # Consistent Delta Calculation
+        delta_qty = new_total_qty - original_qty
+        
         # 2. Determine New Rate (FIDIC 12.3)
         rate_source = "Original Rate"
         if new_material:
             # If material changed, it's likely a Star Rate
-            new_rate, rate_source = self.derive_star_rate(new_material, project_id=similar_item.get('project_id'))
+            new_rate, rate_source = self.derive_star_rate(new_material, project_id=project_id)
             # Fallback to original rate if star rate derivation fails
             if new_rate == 0.0:
                 new_rate = original_rate
@@ -358,10 +384,12 @@ class CostEngine:
             # Check FIDIC 12.3 thresholds
             new_rate, rate_source = self.calculate_new_rate(
                 similar_item, 
-                qty_change
+                delta_qty,
+                project_id=project_id
             )
 
-        impact = (new_rate * (original_qty + qty_change)) - (original_rate * original_qty)
+        impact = new_rate * delta_qty
+        # Note: The above is mathematically impact = new_rate * (new_qty - original_qty)
         
         return {
             "item_id": similar_item['id'],
@@ -374,7 +402,7 @@ class CostEngine:
             "rate_source": rate_source
         }
 
-    def calculate_new_rate(self, item, qty_change, unit_cost_change_pct=0.0):
+    def calculate_new_rate(self, item, qty_change, project_id, unit_cost_change_pct=0.0):
         """
         Implements FIDIC 12.3 logic to determine if a new rate is appropriate.
         Rules:
@@ -390,7 +418,7 @@ class CostEngine:
         if is_fixed:
             return original_rate, "Original Rate"
 
-        project = self.storage.get_project(item['project_id'])
+        project = self.storage.get_project(project_id)
         contract_amount = project.get("accepted_contract_amount", 0.0) if project else 0.0
         
         # Avoid division by zero
@@ -406,7 +434,7 @@ class CostEngine:
         if is_qty_rule and is_val_rule: # Simplified check for now (ignoring cost rule if not provided)
              # Try to derive from similar characters or HSR/BSR
              print(f"DEBUG: Rate re-valuation triggered for {item.get('description')}")
-             return self.derive_star_rate(item['description'], project_id=item['project_id'])
+             return self.derive_star_rate(item['description'], project_id=project_id)
              
         return original_rate, "Original Rate"
 
@@ -511,24 +539,26 @@ class CostEngine:
             if not similar or similar.get('similarity', 0) < 0.6:
                 continue
                 
-            qty_change = 0.0
+            qty_total = 0.0
             qty_info = str(collected_details.get('quantity_changes', "0")).lower()
             try:
                  import re
                  match = re.search(r'([+-]?\d*\.?\d+)', qty_info)
                  if match:
                      val = float(match.group(1))
-                     if any(k in qty_info for k in ['total', 'new', 'final']) and not any(k in qty_info for k in ['delta', 'increase', 'extra', 'add', 'decrease']):
-                         original_qty = similar.get('quantity', 0.0)
-                         qty_change = val - original_qty
+                     # We consistently treat the AI extraction as the "New Total" now
+                     # unless it explicitly says "delta" or "increase"
+                     if any(k in qty_info for k in ['delta', 'increase', 'extra', 'add', 'decrease']):
+                         qty_total = similar.get('quantity', 0.0) + val
                      else:
-                         qty_change = val
-            except: pass
+                         qty_total = val
+            except: qty_total = similar.get('quantity', 0.0)
             
             eval_result = self.evaluate_variation(
                 item_desc, 
+                project_id,
                 new_material=collected_details.get('specification_changes'),
-                qty_change=qty_change
+                new_total_qty=qty_total
             )
             
             if eval_result:
@@ -538,7 +568,7 @@ class CostEngine:
                     'original_description': eval_result['original_item'],
                     'new_description': eval_result['new_item'],
                     'original_quantity': similar.get('quantity', 0),
-                    'new_quantity': similar.get('quantity', 0) + qty_change,
+                    'new_quantity': qty_total,
                     'original_rate': eval_result['original_rate'],
                     'new_rate': eval_result['new_rate'],
                     'rate_source': eval_result['rate_source'],
@@ -628,6 +658,13 @@ class TimeEngine:
         self.cpm_calculated = False
         from .ml_model import MLModel
         self.ml_model = MLModel()
+
+    def train_model(self, project_id):
+        """Train models using project data from storage"""
+        project = self.storage.get_project(project_id)
+        if not project: return
+        self.ml_model.fit_boq(project.get("boq_items", []))
+        self.ml_model.fit_activities(project.get("activities", []))
 
     def estimate_activity_duration(self, description):
         """Estimate duration using ML model"""
@@ -730,11 +767,6 @@ class TimeEngine:
         except Exception as e:
             print(f"Error parsing MSP: {e}")
             return 0
-
-        return []
-        except Exception as e:
-            print(f"Error storing activities: {e}")
-            self.db.rollback()
 
     def calculate_cpm_full(self):
         """
@@ -1009,10 +1041,15 @@ class TimeEngine:
 
     def evaluate_time_impact(self, collected_details, project_id):
         """
-        Evaluate time impact (EOT) based on affected activities and duration adjustments.
+        Evaluate time impact (EOT) using Marginal Analysis.
+        Formula: Time Impact = (New Qty - Original Qty) / Productivity (Work Study)
         """
         project = self.storage.get_project(project_id)
         if not project: return 0
+        
+        # Ensure model is trained for item lookups
+        if not self.ml_model.is_fitted:
+            self.train_model(project_id)
         
         activities = project.get("activities", [])
         if not activities:
@@ -1027,25 +1064,42 @@ class TimeEngine:
                     if p.strip() and p.strip() in self.graph:
                         self.graph.add_edge(p.strip(), act['activity_id'])
         
-        # 2. Baseline CPM
+        # 1. Baseline CPM
         baseline_results = self.calculate_cpm_full()
         baseline_duration = max([v['ef'] for v in baseline_results.values()]) if baseline_results else 0
         
-        # 3. Apply Adjustments
+        # 2. Extract Quantities
+        new_qty_info = str(collected_details.get('quantity_changes', "0"))
+        try:
+            import re
+            match = re.search(r'([+-]?\d*\.?\d+)', new_qty_info)
+            new_qty = float(match.group(1)) if match else 0.0
+        except: new_qty = 0.0
+        
+        affected_items = collected_details.get('affected_items', [])
+        if affected_items:
+            similar = self.ml_model.find_similar_item(affected_items[0])
+            orig_qty = similar.get('quantity', 0.0) if similar else 0.0
+        else:
+            orig_qty = 0.0
+
+        delta_qty = new_qty - orig_qty
+        if delta_qty <= 0:
+            return 0 # No time impact for reductions per user sample (mostly savings)
+
+        # 3. Determine Productivity
+        productivity = 0.0
+        ws_data = str(collected_details.get('work_study_data', ""))
+        if ws_data:
+            match = re.search(r'(\d*\.?\d+)', ws_data)
+            if match:
+                productivity = float(match.group(1))
+        
+        # 4. Map to Activity and Apply Marginal Delay
         affected_act_names = collected_details.get('affected_activities', [])
         if not isinstance(affected_act_names, list):
             affected_act_names = [affected_act_names]
             
-        qty_change_pct = 0.0
-        qty_info = str(collected_details.get('quantity_changes', "0"))
-        try:
-            import re
-            match = re.search(r'([+-]?\d*\.?\d+)', qty_info)
-            if match:
-                val = float(match.group(1))
-                qty_change_pct = val if val < 200 else (val / 100.0) 
-        except: pass
-        
         applied_count = 0
         for act_name in affected_act_names:
             if not act_name: continue
@@ -1055,17 +1109,41 @@ class TimeEngine:
                     best_match = node_id
                     break
             
+            # MARGINAL ANALYSIS LOGIC
             if best_match:
-                orig_dur = self.graph.nodes[best_match].get('duration', 0)
-                new_dur = orig_dur * (1 + (qty_change_pct / 100.0)) if qty_change_pct != 0 else orig_dur + 5
-                self.graph.nodes[best_match]['duration'] = new_dur
-                applied_count += 1
+                # Use user productivity or fallback to reverse calculation
+                if productivity <= 0:
+                    orig_dur = self.graph.nodes[best_match].get('duration', 0)
+                    if orig_dur > 0 and orig_qty > 0:
+                        productivity = orig_qty / orig_dur
                 
-        # 4. Revised CPM
+                if productivity > 0:
+                    marginal_delay = delta_qty / productivity
+                    self.graph.nodes[best_match]['duration'] += marginal_delay
+                    applied_count += 1
+            else:
+                # SCENARIO 3: New activity on Critical Path
+                # If we don't find the activity, but the user says it's a new one and it's critical,
+                # we search for a "sink" or "last" node to attach it to, or just find the critical path and append.
+                # Simplified: In the simulation, the user says "this is a critical path activity".
+                # We'll inject a node and connect it to the end of the current critical path.
+                if productivity > 0:
+                    new_node_id = f"VAR-{len(self.graph.nodes)+1}"
+                    marginal_delay = delta_qty / productivity
+                    self.graph.add_node(new_node_id, name=act_name, duration=marginal_delay)
+                    
+                    # Connect to all current sink nodes (nodes with no successors)
+                    sinks = [n for n in self.graph.nodes if self.graph.out_degree(n) == 0 and n != new_node_id]
+                    for s in sinks:
+                        self.graph.add_edge(s, new_node_id)
+                    
+                    applied_count += 1
+                
+        # 5. Revised CPM
         if applied_count > 0:
             self.cpm_calculated = False
             revised_results = self.calculate_cpm_full()
             revised_duration = max([v['ef'] for v in revised_results.values()]) if revised_results else 0
-            return int(max(0, revised_duration - baseline_duration))
+            return int(max(0, revised_duration - baseline_duration + 0.5)) # Rounding logic
         
         return 0

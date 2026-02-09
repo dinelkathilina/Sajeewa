@@ -123,7 +123,7 @@ class StorageManager:
             return len(items)
         return 0
 
-    def create_session(self, project_id: int, metadata: Dict[str, Any] = None) -> Dict[str, Any]:
+    def create_session(self, project_id: int, session_metadata: Dict[str, Any] = None) -> Dict[str, Any]:
         project = self.get_project(project_id)
         if project:
             session_id = len(project["sessions"]) + 1
@@ -135,28 +135,47 @@ class StorageManager:
                 "status": "active",
                 "created_at": datetime.utcnow().isoformat(),
                 "updated_at": datetime.utcnow().isoformat(),
-                "metadata": metadata or {}
+                "session_metadata": session_metadata or {},
+                "chat_history": []
             }
             project["sessions"].append(session)
             self._save_json(self._get_project_file(project_id), project)
             return session
         return {}
 
+    def update_session_metadata(self, project_id: int, session_id: int, metadata: Dict[str, Any]) -> bool:
+        project = self.get_project(project_id)
+        if not project: return False
+        
+        for session in project.get("sessions", []):
+            if session["id"] == session_id:
+                if "session_metadata" not in session:
+                    session["session_metadata"] = {}
+                session["session_metadata"].update(metadata)
+                session["updated_at"] = datetime.utcnow().isoformat()
+                self._save_json(self._get_project_file(project_id), project)
+                return True
+        return False
+
     def add_chat_message(self, project_id: int, session_id: int, role: str, content: str, metadata: Dict[str, Any] = None):
         project = self.get_project(project_id)
         if project:
-            msg_id = len(project["chat_history"]) + 1
-            message = {
-                "id": msg_id,
-                "session_id": session_id,
-                "role": role,
-                "content": content,
-                "timestamp": datetime.utcnow().isoformat(),
-                "metadata": metadata or {}
-            }
-            project["chat_history"].append(message)
-            self._save_json(self._get_project_file(project_id), project)
-            return message
+            for session in project.get("sessions", []):
+                if session["id"] == session_id:
+                    msg_id = len(session.get("chat_history", [])) + 1
+                    message = {
+                        "id": msg_id,
+                        "session_id": session_id,
+                        "role": role,
+                        "content": content,
+                        "timestamp": datetime.utcnow().isoformat(),
+                        "metadata": metadata or {}
+                    }
+                    if "chat_history" not in session:
+                        session["chat_history"] = []
+                    session["chat_history"].append(message)
+                    self._save_json(self._get_project_file(project_id), project)
+                    return message
         return {}
 
     def create_variation(self, project_id: int, session_id: int, data: Dict[str, Any]) -> Dict[str, Any]:

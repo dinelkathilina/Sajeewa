@@ -202,41 +202,35 @@ Selected Variation Type: {variation_type}
 Collected Details So Far: {collected_details}
 MISSING DETAILS: {missing_fields}
 
+STRICT QS RULES:
+1. COST CALCULATION (Scenario 1): 
+   - Always use formula: Variation Cost = Selected Rate * (New Qty - Original Qty).
+   - If Qty reduction > 10%, warn: "Reduction exceeds 10%, original rate ($X) might not apply. Please confirm the rate for this smaller volume."
+2. TIME EVALUATION (Scenario 2 & 3):
+   - Use MARGINAL ANALYSIS: Time Impact = (New Qty - Original Qty) / Productivity.
+   - Example calculation: "(950 - 900) / 20 = 2.5 Days".
+   - If an activity is on CRITICAL PATH, or a new activity is added to it:
+     - Search HSR/BSR for productivity first.
+     - IF NOT FOUND: "❌ No HSR/BSR norms found. Please provide site work study data (e.g., '20m2/day')."
+
 Instructions:
-1. Check the user's latest query for any of the missing details.
-2. IMPORTANT - EXPERT QS REASONING (FIDIC 12.3):
-   - **Scenario: Quantity Changes**:
-     - If quantity change is > 10% of BOQ quantity, mention: "Since this is a significant change (>10%), we should consider a new rate derivation per FIDIC 12.3."
-     - If change is < 10%, state: "This change is below the 10% threshold, so the original BOQ rate normally applies."
-     - If quantity is reduced to 0, treat it as an OMISSION (Type 4).
-   - **Scenario: Subtitutions**:
-     - If the user is replacing item A with item B, treat it as a two-step process: (1) Omission of A and (2) Addition of B.
-   - **Scenario: Time Impact (EOT)**:
-     - Review the "AVAIALBLE ACTIVITIES" in context.
-     - If the affected item (e.g., Turfing) is related to an activity (e.g., Landscaping), mention: "This item is linked to [Activity Name]. Since it is [on/not on] the Critical Path, this might affect the project completion by approximately [X] days."
-   - **Scenario: Disputes/BSR**:
-     - If the user disagrees with the BOQ rate, suggest: "I can derive a new rate using Market Data/BSR. Please upload the relevant documents or I can search recent similar items."
-3. IMPORTANT - PROACTIVE ITEM SELECTION:
-   - Identify items/activities from context and AUTO-FILL codes/quantities.
-   - Ask: "I found [Item] in the BOQ. Shall I use this for the evaluation?" instead of asking for the code.
-4. Your reply should:
-   - Be professional, citing FIDIC principles where appropriate.
-   - If an item was identified, confirm its details (Item Code, Rate, Qty) with the user.
-   - Ask for the NEXT missing detail from the list: {missing_fields}.
-   - If all details are present, inform the user you are ready to generate the full evaluation and PDF.
-5. If ALL details are provided (or the user says they have no more info), set "complete": true in extracted_data.
+1. Check query for missing details or work study data.
+2. Proactively explain the marginal calculation (New - Original) to avoid user confusion about "0 day" impacts.
+3. If productivity/norms are missing for a critical path addition, WAIT for user input.
+4. If ALL details provided or norms are handled, set "complete": true.
 
 MANDATORY JSON Output Format:
 {{
-    "reply": "Your natural language response asking for the next detail",
+    "reply": "Professional QS response following Marginal Analysis logic (Scenario 1-3)",
     "workflow_state": "collecting_details",
     "extracted_data": {{
         "affected_items": ["item description 1"] or null,
-        "quantity_changes": "Record either NEW TOTAL (e.g., '200m2') or DELTA (e.g., '+50m2'). Specify which." or null,
+        "quantity_changes": "Record NEW TOTAL (e.g., '950m2')." or null,
         "specification_changes": "description" or null,
         "method_changes": "description" or null,
         "location_changes": "description" or null,
         "affected_activities": ["activity name 1"] or null,
+        "work_study_data": "e.g., '20m2/day'" or null,
         "complete": true | false
     }},
     "command": null
