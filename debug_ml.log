@@ -1,0 +1,230 @@
+
+--- MLModel Initialized at 2026-02-09 16:22:49.378998 ---
+DEBUG: Groq API Key found. Client initialized.
+
+--- MLModel Initialized at 2026-02-09 16:22:49.923464 ---
+DEBUG: Groq API Key found. Client initialized.
+
+--- MLModel Initialized at 2026-02-09 16:22:51.004211 ---
+DEBUG: Groq API Key found. Client initialized.
+
+--- MLModel Initialized at 2026-02-09 16:22:51.443793 ---
+DEBUG: Groq API Key found. Client initialized.
+ERROR: Groq failed at 2026-02-09 16:22:52.683306: Error code: 400 - {'error': {'message': 'The model `qwen-2.5-32b` has been decommissioned and is no longer supported. Please refer to https://console.groq.com/docs/deprecations for a recommendation on which model to use instead.', 'type': 'invalid_request_error', 'code': 'model_decommissioned'}}
+
+--- MLModel Initialized at 2026-02-09 16:22:52.950009 ---
+DEBUG: Groq API Key found. Client initialized.
+
+--- MLModel Initialized at 2026-02-09 16:22:53.415791 ---
+DEBUG: Groq API Key found. Client initialized.
+ERROR: Groq failed at 2026-02-09 16:22:54.375025: Error code: 400 - {'error': {'message': 'The model `qwen-2.5-32b` has been decommissioned and is no longer supported. Please refer to https://console.groq.com/docs/deprecations for a recommendation on which model to use instead.', 'type': 'invalid_request_error', 'code': 'model_decommissioned'}}
+
+--- MLModel Initialized at 2026-02-09 16:22:54.659495 ---
+DEBUG: Groq API Key found. Client initialized.
+
+--- MLModel Initialized at 2026-02-09 16:22:55.145204 ---
+DEBUG: Groq API Key found. Client initialized.
+ERROR: Groq failed at 2026-02-09 16:22:56.193852: Error code: 400 - {'error': {'message': 'The model `qwen-2.5-32b` has been decommissioned and is no longer supported. Please refer to https://console.groq.com/docs/deprecations for a recommendation on which model to use instead.', 'type': 'invalid_request_error', 'code': 'model_decommissioned'}}
+
+--- MLModel Initialized at 2026-02-09 16:22:56.466716 ---
+DEBUG: Groq API Key found. Client initialized.
+
+--- MLModel Initialized at 2026-02-09 16:22:56.921641 ---
+DEBUG: Groq API Key found. Client initialized.
+ERROR: Groq failed at 2026-02-09 16:22:57.885362: Error code: 400 - {'error': {'message': 'The model `qwen-2.5-32b` has been decommissioned and is no longer supported. Please refer to https://console.groq.com/docs/deprecations for a recommendation on which model to use instead.', 'type': 'invalid_request_error', 'code': 'model_decommissioned'}}
+
+--- MLModel Initialized at 2026-02-09 16:24:26.348434 ---
+DEBUG: Groq API Key found. Client initialized.
+
+--- MLModel Initialized at 2026-02-09 16:24:26.899467 ---
+DEBUG: Groq API Key found. Client initialized.
+
+--- MLModel Initialized at 2026-02-09 16:24:28.114246 ---
+DEBUG: Groq API Key found. Client initialized.
+
+--- MLModel Initialized at 2026-02-09 16:24:28.552163 ---
+DEBUG: Groq API Key found. Client initialized.
+ERROR: Groq failed at 2026-02-09 16:24:29.634385: Error code: 400 - {'error': {'message': '`reasoning_effort` is not supported with this model', 'type': 'invalid_request_error'}}
+
+--- MLModel Initialized at 2026-02-09 16:24:29.906615 ---
+DEBUG: Groq API Key found. Client initialized.
+
+--- MLModel Initialized at 2026-02-09 16:24:30.343982 ---
+DEBUG: Groq API Key found. Client initialized.
+ERROR: Groq failed at 2026-02-09 16:24:31.551404: Error code: 400 - {'error': {'message': '`reasoning_effort` is not supported with this model', 'type': 'invalid_request_error'}}
+
+--- MLModel Initialized at 2026-02-09 16:24:31.831435 ---
+DEBUG: Groq API Key found. Client initialized.
+
+--- MLModel Initialized at 2026-02-09 16:24:32.298598 ---
+DEBUG: Groq API Key found. Client initialized.
+ERROR: Groq failed at 2026-02-09 16:24:33.291781: Error code: 400 - {'error': {'message': '`reasoning_effort` is not supported with this model', 'type': 'invalid_request_error'}}
+
+--- MLModel Initialized at 2026-02-09 16:24:33.602901 ---
+DEBUG: Groq API Key found. Client initialized.
+
+--- MLModel Initialized at 2026-02-09 16:24:34.062482 ---
+DEBUG: Groq API Key found. Client initialized.
+ERROR: Groq failed at 2026-02-09 16:24:35.059927: Error code: 400 - {'error': {'message': '`reasoning_effort` is not supported with this model', 'type': 'invalid_request_error'}}
+
+--- MLModel Initialized at 2026-02-09 16:26:28.013331 ---
+DEBUG: Groq API Key found. Client initialized.
+
+--- MLModel Initialized at 2026-02-09 16:26:28.619448 ---
+DEBUG: Groq API Key found. Client initialized.
+
+--- MLModel Initialized at 2026-02-09 16:26:29.810447 ---
+DEBUG: Groq API Key found. Client initialized.
+
+--- MLModel Initialized at 2026-02-09 16:26:30.253831 ---
+DEBUG: Groq API Key found. Client initialized.
+
+--- MLModel Initialized at 2026-02-09 16:26:32.378501 ---
+DEBUG: Groq API Key found. Client initialized.
+
+--- MLModel Initialized at 2026-02-09 16:26:32.867020 ---
+DEBUG: Groq API Key found. Client initialized.
+
+--- MLModel Initialized at 2026-02-09 16:26:34.551859 ---
+DEBUG: Groq API Key found. Client initialized.
+
+--- MLModel Initialized at 2026-02-09 16:26:34.977906 ---
+DEBUG: Groq API Key found. Client initialized.
+
+--- MLModel Initialized at 2026-02-09 16:26:36.713941 ---
+DEBUG: Groq API Key found. Client initialized.
+
+--- MLModel Initialized at 2026-02-09 16:26:37.156765 ---
+DEBUG: Groq API Key found. Client initialized.
+
+--- MLModel Initialized at 2026-02-09 16:27:53.361443 ---
+DEBUG: Groq API Key found. Client initialized.
+
+--- MLModel Initialized at 2026-02-09 16:27:53.858664 ---
+DEBUG: Groq API Key found. Client initialized.
+
+--- MLModel Initialized at 2026-02-09 16:27:54.913559 ---
+DEBUG: Groq API Key found. Client initialized.
+
+--- MLModel Initialized at 2026-02-09 16:27:55.350635 ---
+DEBUG: Groq API Key found. Client initialized.
+
+--- MLModel Initialized at 2026-02-09 16:27:57.154110 ---
+DEBUG: Groq API Key found. Client initialized.
+
+--- MLModel Initialized at 2026-02-09 16:27:57.584787 ---
+DEBUG: Groq API Key found. Client initialized.
+
+--- MLModel Initialized at 2026-02-09 16:27:59.215193 ---
+DEBUG: Groq API Key found. Client initialized.
+
+--- MLModel Initialized at 2026-02-09 16:27:59.661969 ---
+DEBUG: Groq API Key found. Client initialized.
+
+--- MLModel Initialized at 2026-02-09 16:28:01.351987 ---
+DEBUG: Groq API Key found. Client initialized.
+
+--- MLModel Initialized at 2026-02-09 16:28:01.851129 ---
+DEBUG: Groq API Key found. Client initialized.
+
+--- MLModel Initialized at 2026-02-09 16:30:22.177716 ---
+DEBUG: Groq API Key found. Client initialized.
+
+--- MLModel Initialized at 2026-02-09 16:30:22.643298 ---
+DEBUG: Groq API Key found. Client initialized.
+
+--- MLModel Initialized at 2026-02-09 16:30:23.716054 ---
+DEBUG: Groq API Key found. Client initialized.
+
+--- MLModel Initialized at 2026-02-09 16:30:24.178425 ---
+DEBUG: Groq API Key found. Client initialized.
+
+--- MLModel Initialized at 2026-02-09 16:30:26.039384 ---
+DEBUG: Groq API Key found. Client initialized.
+
+--- MLModel Initialized at 2026-02-09 16:30:26.473866 ---
+DEBUG: Groq API Key found. Client initialized.
+
+--- MLModel Initialized at 2026-02-09 16:30:28.190473 ---
+DEBUG: Groq API Key found. Client initialized.
+
+--- MLModel Initialized at 2026-02-09 16:30:28.791427 ---
+DEBUG: Groq API Key found. Client initialized.
+
+--- MLModel Initialized at 2026-02-09 16:30:30.451916 ---
+DEBUG: Groq API Key found. Client initialized.
+
+--- MLModel Initialized at 2026-02-09 16:30:30.895831 ---
+DEBUG: Groq API Key found. Client initialized.
+
+--- MLModel Initialized at 2026-02-09 16:33:37.283350 ---
+DEBUG: Groq API Key found. Client initialized.
+
+--- MLModel Initialized at 2026-02-09 16:33:37.834470 ---
+DEBUG: Groq API Key found. Client initialized.
+
+--- MLModel Initialized at 2026-02-09 16:33:38.927995 ---
+DEBUG: Groq API Key found. Client initialized.
+
+--- MLModel Initialized at 2026-02-09 16:33:39.359329 ---
+DEBUG: Groq API Key found. Client initialized.
+
+--- MLModel Initialized at 2026-02-09 16:33:41.224704 ---
+DEBUG: Groq API Key found. Client initialized.
+
+--- MLModel Initialized at 2026-02-09 16:33:41.682465 ---
+DEBUG: Groq API Key found. Client initialized.
+
+--- MLModel Initialized at 2026-02-09 16:33:43.246363 ---
+DEBUG: Groq API Key found. Client initialized.
+
+--- MLModel Initialized at 2026-02-09 16:33:43.700346 ---
+DEBUG: Groq API Key found. Client initialized.
+
+--- MLModel Initialized at 2026-02-09 16:33:45.316856 ---
+DEBUG: Groq API Key found. Client initialized.
+
+--- MLModel Initialized at 2026-02-09 16:33:45.748636 ---
+DEBUG: Groq API Key found. Client initialized.
+
+--- MLModel Initialized at 2026-02-09 16:35:35.042566 ---
+DEBUG: Groq API Key found. Client initialized.
+
+--- MLModel Initialized at 2026-02-09 16:35:35.561508 ---
+DEBUG: Groq API Key found. Client initialized.
+
+--- MLModel Initialized at 2026-02-09 16:35:37.093276 ---
+DEBUG: Groq API Key found. Client initialized.
+
+--- MLModel Initialized at 2026-02-09 16:35:37.627958 ---
+DEBUG: Groq API Key found. Client initialized.
+
+--- MLModel Initialized at 2026-02-09 16:35:39.056674 ---
+DEBUG: Groq API Key found. Client initialized.
+
+--- MLModel Initialized at 2026-02-09 16:35:39.487584 ---
+DEBUG: Groq API Key found. Client initialized.
+
+--- MLModel Initialized at 2026-02-09 16:35:43.856603 ---
+DEBUG: Groq API Key found. Client initialized.
+
+--- MLModel Initialized at 2026-02-09 16:35:44.301655 ---
+DEBUG: Groq API Key found. Client initialized.
+
+--- MLModel Initialized at 2026-02-09 16:35:47.526781 ---
+DEBUG: Groq API Key found. Client initialized.
+
+--- MLModel Initialized at 2026-02-09 16:35:47.970410 ---
+DEBUG: Groq API Key found. Client initialized.
+
+--- MLModel Initialized at 2026-02-09 16:36:10.308416 ---
+DEBUG: Groq API Key found. Client initialized.
+
+--- MLModel Initialized at 2026-02-09 16:36:10.797413 ---
+DEBUG: Groq API Key found. Client initialized.
+
+--- MLModel Initialized at 2026-02-09 16:36:12.500849 ---
+DEBUG: Groq API Key found. Client initialized.
+
+--- MLModel Initialized at 2026-02-09 16:36:12.930672 ---
+DEBUG: Groq API Key found. Client initialized.

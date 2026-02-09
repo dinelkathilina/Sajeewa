@@ -1,4 +1,5 @@
 import React, { useState } from "react";
+import { useNavigate } from "react-router-dom";
 import axios from "axios";
 import { Send, Bot, Download } from "lucide-react";
 
@@ -13,6 +14,7 @@ interface ChatProps {
 }
 
 const Chat: React.FC<ChatProps> = ({ projectId }) => {
+  const navigate = useNavigate();
   const [messages, setMessages] = useState<Msg[]>([
     {
       sender: "bot",
@@ -126,15 +128,25 @@ const Chat: React.FC<ChatProps> = ({ projectId }) => {
                   <span>Total Cost Impact:</span>
                   <span className="font-bold">
                     {m.proposal.cost_impact > 0 ? "+" : ""}$
-                    {m.proposal.cost_impact}
+                    {m.proposal.cost_impact?.toLocaleString()}
                   </span>
                 </div>
-                <button
-                  onClick={() => downloadPDF(m.proposal)}
-                  className="mt-3 w-full bg-yellow-600 text-white py-1.5 rounded-md text-xs font-semibold hover:bg-yellow-700 transition-colors flex items-center justify-center gap-1.5"
-                >
-                  <Download className="w-3.5 h-3.5" /> Download PDF Proposal
-                </button>
+                <div className="flex gap-2 mt-3">
+                  <button
+                    onClick={() =>
+                      navigate(`/proposal/${m.proposal.variation_id}`)
+                    }
+                    className="flex-1 bg-blue-600 text-white py-1.5 rounded-md text-xs font-semibold hover:bg-blue-700 transition-colors flex items-center justify-center gap-1.5"
+                  >
+                    <Bot className="w-3.5 h-3.5" /> Review
+                  </button>
+                  <button
+                    onClick={() => downloadPDF(m.proposal)}
+                    className="flex-1 bg-yellow-600 text-white py-1.5 rounded-md text-xs font-semibold hover:bg-yellow-700 transition-colors flex items-center justify-center gap-1.5"
+                  >
+                    <Download className="w-3.5 h-3.5" /> PDF
+                  </button>
+                </div>
               </div>
             )}
           </div>

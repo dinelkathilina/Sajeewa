@@ -22,6 +22,130 @@ class CostEngine:
         items = self.db.query(BOQItem).filter(BOQItem.project_id == project_id).all()
         self.ml_model.fit_boq(items)
 
+    def validate_boq_file(self, file_path):
+        """
+        Validates the BOQ file structure and content.
+        Returns: {'valid': bool, 'errors': [str], 'metadata': dict}
+        """
+        errors = []
+        metadata = {}
+        sheet_found = False
+        
+        try:
+            if not os.path.exists(file_path):
+                return {'valid': False, 'errors': ["File not found"], 'metadata': {}}
+
+            # Logic for Excel (.xlsx)
+            if file_path.lower().endswith(('.xlsx', '.xls')):
+                try:
+                    with pd.ExcelFile(file_path) as xl:
+                        for sheet_name in xl.sheet_names:
+                            if sheet_name.lower() in ['application', 'summary', 'mat @ site', 'gs', 'grand summary', 'summary of bill']: continue
+                            
+                            try:
+                                df_raw = pd.read_excel(xl, sheet_name=sheet_name, header=None)
+                            except: continue
+                            
+                            # Find header row
+                            header_idx = -1
+                            for i, row in df_raw.head(40).iterrows():
+                                row_str = " ".join(str(v).lower() for v in row if pd.notna(v))
+                                if any(k in row_str for k in ['desc', 'qty', 'unit', 'rate']):
+                                    header_idx = i
+                                    break
+                            
+                            if header_idx != -1:
+                                df = pd.read_excel(xl, sheet_name=sheet_name, skiprows=header_idx)
+                                df.columns = [str(c).strip().lower() for c in df.columns]
+                                
+                                # Smart Column Detection
+                                required = {
+                                    'description': ['description', 'desc', 'work', 'activity', 'item name'],
+                                    'quantity': ['qty', 'quantity', 'amount'],
+                                    'rate': ['rate', 'price', 'unit rate']
+                                }
+                                
+                                missing = []
+                                for field, keywords in required.items():
+                                    found = False
+                                    for col in df.columns:
+                                        if any(k in col for k in keywords):
+                                            found = True
+                                            break
+                                    if not found:
+                                        missing.append(field)
+                                
+                                if missing:
+                                    errors.append(f"Sheet '{sheet_name}': Missing columns: {', '.join(missing)}")
+                                else:
+                                    sheet_found = True
+                                    break # valid sheet found
+                except Exception as e:
+                    return {'valid': False, 'errors': [f"Invalid Excel file: {str(e)}"], 'metadata': {}}
+            
+            elif file_path.lower().endswith('.csv'):
+                # Simple CSV check with robust header detection
+                try:
+                    # Try UTF-8 then Latin1
+                    try:
+                        df_raw = pd.read_csv(file_path, header=None)
+                    except UnicodeDecodeError:
+                        df_raw = pd.read_csv(file_path, encoding='latin1', header=None)
+                    
+                    # Find header row
+                    header_idx = -1
+                    required_keywords = ['desc', 'qty', 'rate', 'unit', 'price', 'work']
+                    for i, row in df_raw.head(20).iterrows():
+                        row_str = " ".join(str(v).lower() for v in row if pd.notna(v))
+                        if any(k in row_str for k in required_keywords):
+                            header_idx = i
+                            break
+                    
+                    if header_idx != -1:
+                        df = pd.read_csv(file_path, skiprows=header_idx)
+                    else:
+                        df = pd.read_csv(file_path) # Fallback to first row
+                    
+                    df.columns = [str(c).strip().lower() for c in df.columns]
+                    
+                    required = {
+                        'description': ['description', 'desc', 'work', 'activity', 'item name'],
+                        'quantity': ['qty', 'quantity', 'amount'],
+                        'rate': ['rate', 'price', 'unit rate']
+                    }
+                    
+                    missing = []
+                    for field, keywords in required.items():
+                        found = False
+                        for col in df.columns:
+                            if any(k in col for k in keywords):
+                                found = True
+                                break
+                        if not found:
+                            missing.append(field)
+                    
+                    if missing:
+                        errors.append(f"CSV missing critical columns: {', '.join(missing)}. Detected headers: {list(df.columns)}")
+                    else:
+                        sheet_found = True
+                except Exception as e:
+                     errors.append(f"Invalid CSV file processing error: {str(e)}")
+
+            else:
+                errors.append("Unsupported file format. Please upload .xlsx, .xls, or .csv")
+
+            if not sheet_found and not errors:
+                errors.append("Could not identify a valid BOQ sheet with 'Description', 'Qty', and 'Rate' headers.")
+
+        except Exception as e:
+            errors.append(f"Unexpected validation error: {str(e)}")
+
+        return {
+            'valid': sheet_found,
+            'errors': [] if sheet_found else errors,
+            'metadata': metadata
+        }
+
     def load_boq(self, file_path, project_id):
         try:
             items = []
@@ -38,32 +162,32 @@ class CostEngine:
 
             # Logic for Excel (.xlsx)
             if file_path.lower().endswith('.xlsx') or file_path.lower().endswith('.xls'):
-                xl = pd.ExcelFile(file_path)
-                for sheet_name in xl.sheet_names:
-                    # Skip summary/application sheets if named specifically
-                    if sheet_name.lower() in ['application', 'summary', 'mat @ site']: continue
-                    
-                    df_raw = pd.read_excel(xl, sheet_name=sheet_name, header=None)
-                    
-                    # Find header row - search up to 40 rows
-                    header_idx = -1
-                    for i, row in df_raw.head(40).iterrows():
-                        row_str = " ".join(str(v).lower() for v in row if pd.notna(v))
-                        # Aggressive keywords
-                        if any(k in row_str for k in ['desc', 'qty', 'unit', 'rate', 'amount', 'item']):
-                            header_idx = i
-                            break
-                    
-                    if header_idx != -1:
-                        df = pd.read_excel(xl, sheet_name=sheet_name, skiprows=header_idx)
-                        df.columns = [str(c).strip().lower() for c in df.columns]
-                    elif 'bill' in sheet_name.lower():
-                        # Fallback: Assume row 10-15 might contain headers if not found, 
-                        # or just assume position if it's a Bill sheet
-                        df = df_raw.iloc[10:].copy()
-                        df.columns = [f"col_{i}" for i in range(len(df.columns))]
-                    else:
-                        continue
+                with pd.ExcelFile(file_path) as xl:
+                    for sheet_name in xl.sheet_names:
+                        # Skip summary/application sheets if named specifically
+                        if sheet_name.lower() in ['application', 'summary', 'mat @ site', 'gs', 'grand summary', 'summary of bill']: continue
+                        
+                        df_raw = pd.read_excel(xl, sheet_name=sheet_name, header=None)
+                        
+                        # Find header row - search up to 40 rows
+                        header_idx = -1
+                        for i, row in df_raw.head(40).iterrows():
+                            row_str = " ".join(str(v).lower() for v in row if pd.notna(v))
+                            # Aggressive keywords
+                            if any(k in row_str for k in ['desc', 'qty', 'unit', 'rate', 'amount', 'item']):
+                                header_idx = i
+                                break
+                        
+                        if header_idx != -1:
+                            df = pd.read_excel(xl, sheet_name=sheet_name, skiprows=header_idx)
+                            df.columns = [str(c).strip().lower() for c in df.columns]
+                        elif 'bill' in sheet_name.lower():
+                            # Fallback: Assume row 10-15 might contain headers if not found, 
+                            # or just assume position if it's a Bill sheet
+                            df = df_raw.iloc[10:].copy()
+                            df.columns = [f"col_{i}" for i in range(len(df.columns))]
+                        else:
+                            continue
                     
                     # Smart Column Mapping
                     def find_col(keywords, cols):
@@ -153,6 +277,32 @@ class CostEngine:
             return len(items)
         except Exception as e:
             print(f"Error loading BOQ: {e}")
+            import traceback
+            traceback.print_exc()
+            return 0
+
+    def save_rate_breakdown_df(self, df, project_id):
+        """Save a pandas DataFrame of rate breakdowns to the database"""
+        try:
+            items = []
+            for _, row in df.iterrows():
+                items.append(RateBreakdown(
+                    project_id=project_id,
+                    item_ref=str(row.get('item_ref', '')),
+                    description=str(row.get('description', 'Parsed from OCR')),
+                    material_cost=float(row.get('material_cost', 0.0)),
+                    labor_cost=float(row.get('labor_cost', row.get('rate', 0.0))),
+                    plant_cost=float(row.get('plant_cost', 0.0)),
+                    total_rate=float(row.get('total_rate', row.get('rate', 0.0)))
+                ))
+            
+            if items:
+                self.db.add_all(items)
+                self.db.commit()
+                return len(items)
+            return 0
+        except Exception as e:
+            print(f"Error saving rate breakdown dataframe: {e}")
             import traceback
             traceback.print_exc()
             return 0
@@ -247,21 +397,15 @@ class CostEngine:
         original_qty = similar_item.get('quantity', 0.0)
         
         # 2. Determine New Rate (FIDIC 12.3)
-        # We assume some defaults for change % if not fully specified
-        qty_change_pct = (qty_change / original_qty * 100.0) if original_qty > 0 else 100.0
-        amt_change_pct = (qty_change * original_rate) / 1000000.0 # Hypothetical threshold
-        
+        rate_source = "Original Rate"
         if new_material:
             # If material changed, it's likely a Star Rate
-            new_rate = self.derive_star_rate(new_material)
+            new_rate, rate_source = self.derive_star_rate(new_material, project_id=similar_item.get('project_id'))
         else:
             # Check FIDIC 12.3 thresholds
-            # Unit cost change % is often complex to derive without full breakdown, 
-            # so we'll allow it to be passed or default it to 0 for initial check.
-            new_rate = self.calculate_new_rate(
+            new_rate, rate_source = self.calculate_new_rate(
                 similar_item, 
-                qty_change,
-                1.1 # Defaulting unit cost change to >1% if requested generally
+                qty_change
             )
 
         impact = (new_rate * (original_qty + qty_change)) - (original_rate * original_qty)
@@ -273,7 +417,8 @@ class CostEngine:
             "original_rate": original_rate,
             "new_rate": round(new_rate, 2),
             "cost_impact": round(impact, 2),
-            "is_star_rate": new_rate != original_rate
+            "is_star_rate": new_rate != original_rate,
+            "rate_source": rate_source
         }
 
     def calculate_new_rate(self, item, qty_change, unit_cost_change_pct=0.0):
@@ -295,94 +440,204 @@ class CostEngine:
         project = self.db.query(Project).filter(Project.id == item['project_id']).first()
         contract_amount = project.accepted_contract_amount if project else 0.0
         
-        qty_change_pct = (abs(qty_change) / original_qty * 100.0) if original_qty > 0 else 0.0
+        # Avoid division by zero
+        qty_change_pct = (abs(qty_change) / original_qty * 100.0) if original_qty > 0 else 100.0
         value_change = abs(qty_change) * original_rate
         threshold_01_pct = 0.0001 * contract_amount
         
         is_qty_rule = qty_change_pct > 10.0
         is_val_rule = value_change > threshold_01_pct and contract_amount > 0
-        is_cost_rule = unit_cost_change_pct > 1.0
+        is_cost_rule = unit_cost_change_pct > 1.0 # This would typically come from detailed breakdown analysis
         
-        if is_qty_rule and is_val_rule and is_cost_rule:
+        # FIDIC 12.3(a): New rate applies if ALL conditions (a), (b), (c) are met and (d) is not fixed
+        if is_qty_rule and is_val_rule: # Simplified check for now (ignoring cost rule if not provided)
              # Try to derive from similar characters or HSR/BSR
+             print(f"DEBUG: Rate re-valuation triggered for {item.get('description')}")
              return self.derive_star_rate(item['description'], project_id=item['project_id'])
              
-        return original_rate
+        return original_rate, "Original Rate"
 
     def derive_star_rate(self, description, project_id=None):
         """
         Derives a new rate using ML similarity search, breakdown analysis,
         or searching external HSR/BSR files.
         """
-        # 1. Search existing BOQ for similar
+        # 1. Search existing Rate Breakdowns
         similar_item = self.ml_model.find_similar_item(description)
-        if similar_item and similar_item['similarity'] > 0.8:
-            breakdown = self.db.query(RateBreakdown).filter(RateBreakdown.item_ref == similar_item.get('item_number')).first()
-            if breakdown:
-                return breakdown.total_rate
-            return similar_item.get('rate', 0.0)
-
+        if similar_item:
+             # Check if we have a breakdown for this similar item
+             breakdown = self.db.query(RateBreakdown).filter(RateBreakdown.item_ref == similar_item.get('item_number')).first()
+             if breakdown:
+                 return breakdown.total_rate, f"Breakdown ({similar_item.get('item_number', 'N/A')})"
+        
         # 2. Search HSR/BSR/Quotation files
-        return self.search_external_rates(description)
+        external_rate, source = self.search_external_rates(description)
+        if external_rate > 0:
+            return external_rate, f"External: {source}"
+            
+        # 3. Fallback: ML Similarity from BOQ (if high confidence)
+        if similar_item and similar_item.get('similarity', 0) > 0.8:
+            return similar_item.get('rate', 0.0), f"Similar to {similar_item.get('item_number')}"
+            
+        # 4. Fallback: ML Regression Prediction
+        pred_rate, confidence = self.ml_model.predict_rate(description)
+        if pred_rate > 0 and confidence > 0.5:
+            return pred_rate, f"ML Prediction (Conf: {confidence:.2f})"
+            
+        return 0.0, "Not Found"
+
+    def update_variation_detail(self, detail_id, updates):
+        """
+        Update a variation detail and recalculate impacts.
+        updates: dict containing new_rate, new_quantity, justification, etc.
+        """
+        from .database import VariationDetail, Variation
+        
+        detail = self.db.query(VariationDetail).filter(VariationDetail.id == detail_id).first()
+        if not detail:
+            return None
+            
+        # Apply updates
+        if 'new_rate' in updates:
+            detail.new_rate = float(updates['new_rate'])
+            detail.rate_source = "Manual Adjustment"
+        if 'new_quantity' in updates:
+            detail.new_quantity = float(updates['new_quantity'])
+        if 'justification' in updates:
+            detail.justification = updates['justification']
+        if 'new_description' in updates:
+            detail.new_description = updates['new_description']
+            
+        # Recalculate line impact
+        # Net Impact = (New Qty * New Rate) - (Original Qty * Original Rate)
+        val_old = (detail.original_quantity or 0) * (detail.original_rate or 0)
+        val_new = (detail.new_quantity or 0) * (detail.new_rate or 0)
+        detail.cost_impact = val_new - val_old
+        
+        self.db.commit()
+        self.db.refresh(detail)
+        
+        # Update Parent Variation
+        self.recalculate_variation_totals(detail.variation_id)
+        
+        return detail
+
+    def recalculate_variation_totals(self, variation_id):
+        """Sum up all details to update variation total cost impact"""
+        from .database import Variation, VariationDetail
+        from sqlalchemy import func
+        
+        variation = self.db.query(Variation).filter(Variation.id == variation_id).first()
+        if not variation: return
+        
+        total_impact = self.db.query(func.sum(VariationDetail.cost_impact))\
+            .filter(VariationDetail.variation_id == variation_id).scalar() or 0.0
+            
+        variation.cost_impact = total_impact
+        variation.updated_at = datetime.utcnow()
+        self.db.commit()
 
     def search_external_rates(self, description):
         """
         Searches through HSR, BSR, and Quotation files in the upload directory.
+        Returns: (rate, source_filename)
         """
         upload_dir = "uploaded_files"
         if not os.path.exists(upload_dir):
-            return 0.0
+            return 0.0, None
             
         for filename in os.listdir(upload_dir):
             if any(k in filename.upper() for k in ["HSR", "BSR", "QUOTATION"]):
                 path = os.path.join(upload_dir, filename)
-                # Simple keyword search in CSV/Excel for external rates
                 try:
+                    df = None
                     if path.endswith('.csv'):
-                        df = pd.read_csv(path)
-                    else:
-                        df = pd.read_excel(path)
+                        try:
+                            df = pd.read_csv(path, encoding='utf-8')
+                        except:
+                            df = pd.read_csv(path, encoding='latin1')
+                    elif path.endswith(('.xlsx', '.xls')):
+                        with pd.ExcelFile(path) as xl:
+                            df = pd.read_excel(xl)
                     
-                    # Fuzzy match description in the dataframe
-                    # Search columns that look like descriptions
-                    desc_cols = [c for c in df.columns if any(k in str(c).lower() for k in ['desc', 'item', 'work'])]
-                    rate_cols = [c for c in df.columns if any(k in str(c).lower() for k in ['rate', 'price', 'unit rate'])]
-                    
-                    if desc_cols and rate_cols:
-                        for _, row in df.iterrows():
-                            # Simple keyword match
-                            row_desc = str(row[desc_cols[0]]).lower()
-                            if all(word in row_desc for word in description.lower().split()[:3]): # Match first 3 words
-                                try:
-                                    return float(str(row[rate_cols[0]]).replace(',', ''))
-                                except: continue
+                    if df is not None:
+                        # Clean columns
+                        df.columns = [str(c).strip().lower() for c in df.columns]
+                        
+                        # Find relevant columns
+                        desc_cols = [c for c in df.columns if any(k in c for k in ['desc', 'item', 'work'])]
+                        rate_cols = [c for c in df.columns if any(k in c for k in ['rate', 'price', 'unit rate'])]
+                        
+                        if desc_cols and rate_cols:
+                            desc_col = desc_cols[0]
+                            rate_col = rate_cols[0]
+                            
+                            # Searching for best match
+                            for _, row in df.iterrows():
+                                row_desc = str(row[desc_col]).lower()
+                                # Simple keyword match approach
+                                query_keywords = description.lower().split()
+                                match_count = sum(1 for word in query_keywords if word in row_desc)
+                                
+                                # If more than 50% of words match
+                                if match_count > (len(query_keywords) * 0.5):
+                                    try:
+                                        val = str(row[rate_col]).replace(',', '').strip()
+                                        return float(val), filename
+                                    except: continue
                 except Exception as e:
-                    print(f"Error searching in {filename}: {e}")
+                    print(f"Error searching {filename}: {e}")
         
-        return 0.0 
+        return 0.0, None 
 
 class TimeEngine:
-    def __init__(self):
+    def __init__(self, db_session=None):
         self.graph = nx.DiGraph()
+        self.db = db_session
+        self.cpm_calculated = False
+        from .ml_model import MLModel
+        self.ml_model = MLModel()
 
-    def parse_schedule(self, file_path):
-        if file_path.endswith('.xml'): return self._parse_msp_xml(file_path)
-        if file_path.endswith('.csv'): return self._parse_msp_csv(file_path)
-        return 0
+    def estimate_activity_duration(self, description):
+        """Estimate duration using ML model"""
+        if hasattr(self.ml_model, 'predict_duration'):
+            duration, confidence = self.ml_model.predict_duration(description)
+            if duration > 0:
+                return duration, confidence
+        return 0.0, 0.0
+
+    def parse_schedule(self, file_path, project_id=None):
+        """Parse schedule and optionally store in database"""
+        count = 0
+        if file_path.endswith('.xml'): 
+            count = self._parse_msp_xml(file_path)
+        elif file_path.endswith('.csv') or file_path.endswith('.xlsx'):
+            count = self._parse_msp_csv(file_path)
+        
+        # Store activities in database if db session provided
+        if count > 0 and self.db and project_id:
+            self._store_activities_to_db(project_id)
+        
+        return count
 
     def _parse_msp_csv(self, file_path):
         try:
-            try:
-                df = pd.read_csv(file_path, encoding='utf-8')
-            except UnicodeDecodeError:
-                df = pd.read_csv(file_path, encoding='latin1')
+            # Handle both CSV and Excel
+            if file_path.endswith('.xlsx') or file_path.endswith('.xls'):
+                with pd.ExcelFile(file_path) as xl:
+                    df = pd.read_excel(xl)
+            else:
+                try:
+                    df = pd.read_csv(file_path, encoding='utf-8')
+                except UnicodeDecodeError:
+                    df = pd.read_csv(file_path, encoding='latin1')
             
             df.columns = [str(c).replace(' ', '_').lower() for c in df.columns]
             
             # Flexible Column Mapping
             col_map = {
-                'id': next((c for c in df.columns if 'task_id' in c or 'uid' in c), None),
-                'name': next((c for c in df.columns if 'name' in c or 'task' in c), None),
+                'id': next((c for c in df.columns if 'task_id' in c or 'uid' in c or 'id' in c), None),
+                'name': next((c for c in df.columns if 'name' in c or 'task' in c or 'activity' in c), None),
                 'duration': next((c for c in df.columns if 'duration' in c or 'dur' in c), None),
                 'predecessors': next((c for c in df.columns if 'pred' in c), None)
             }
@@ -411,7 +666,9 @@ class TimeEngine:
                         if p: self.graph.add_edge(p, t_id)
             return len(self.graph.nodes)
         except Exception as e:
-            print(f"Error parsing Excel Schedule: {e}")
+            print(f"Error parsing Schedule: {e}")
+            import traceback
+            traceback.print_exc()
             return 0
 
     def _parse_msp_xml(self, file_path):
@@ -438,14 +695,197 @@ class TimeEngine:
             print(f"Error parsing MSP: {e}")
             return 0
 
-    def calculate_project_duration(self):
+    def _store_activities_to_db(self, project_id):
+        """Store parsed activities to database"""
+        from .database import Activity
+        
         try:
-            # CPM: Path length is sum of node durations.
-            # NetworkX longest_path usually uses edge weights.
-            # We can use a simple algorithm:
-            # 1. Topologically sort.
-            # 2. DP: Dist[v] = Duration[v] + max(Dist[u] for u in predecessors)
+            # Clear existing activities for this project
+            self.db.query(Activity).filter(Activity.project_id == project_id).delete()
             
+            activities = []
+            for node_id, data in self.graph.nodes(data=True):
+                # Get predecessors
+                preds = list(self.graph.predecessors(node_id))
+                pred_str = ','.join(preds) if preds else None
+                
+                activity = Activity(
+                    project_id=project_id,
+                    activity_id=str(node_id),
+                    name=data.get('name', ''),
+                    duration=data.get('duration', 0.0),
+                    predecessors=pred_str
+                )
+                activities.append(activity)
+            
+            if activities:
+                self.db.add_all(activities)
+                self.db.commit()
+                print(f"Stored {len(activities)} activities to database")
+        except Exception as e:
+            print(f"Error storing activities: {e}")
+            self.db.rollback()
+
+    def calculate_cpm_full(self):
+        """
+        Calculate full CPM with ES, EF, LS, LF, and Float for all activities
+        Returns dictionary with node_id as key and CPM data as value
+        """
+        if not self.graph.nodes:
+            return {}
+        
+        try:
+            # Forward pass - Calculate ES and EF
+            es = {}  # Early Start
+            ef = {}  # Early Finish
+            
+            for node in nx.topological_sort(self.graph):
+                duration = self.graph.nodes[node].get('duration', 0)
+                preds = list(self.graph.predecessors(node))
+                
+                if not preds:
+                    es[node] = 0.0
+                else:
+                    es[node] = max(ef[p] for p in preds)
+                
+                ef[node] = es[node] + duration
+            
+            # Project duration
+            project_duration = max(ef.values()) if ef else 0.0
+            
+            # Backward pass - Calculate LS and LF
+            ls = {}  # Late Start
+            lf = {}  # Late Finish
+            
+            # Start from the end nodes
+            for node in reversed(list(nx.topological_sort(self.graph))):
+                duration = self.graph.nodes[node].get('duration', 0)
+                succs = list(self.graph.successors(node))
+                
+                if not succs:
+                    lf[node] = project_duration
+                else:
+                    lf[node] = min(ls[s] for s in succs)
+                
+                ls[node] = lf[node] - duration
+            
+            # Calculate Float and identify critical activities
+            cpm_data = {}
+            for node in self.graph.nodes:
+                total_float = ls[node] - es[node]
+                is_critical = abs(total_float) < 0.01  # Account for floating point errors
+                
+                cpm_data[node] = {
+                    'name': self.graph.nodes[node].get('name', ''),
+                    'duration': self.graph.nodes[node].get('duration', 0),
+                    'es': es[node],
+                    'ef': ef[node],
+                    'ls': ls[node],
+                    'lf': lf[node],
+                    'total_float': total_float,
+                    'is_critical': is_critical
+                }
+                
+                # Update graph node with CPM data
+                self.graph.nodes[node].update({
+                    'es': es[node],
+                    'ef': ef[node],
+                    'ls': ls[node],
+                    'lf': lf[node],
+                    'total_float': total_float,
+                    'is_critical': 1 if is_critical else 0
+                })
+            
+            self.cpm_calculated = True
+            
+            # Update database if available
+            if self.db:
+                self._update_cpm_in_db(cpm_data)
+            
+            return cpm_data
+            
+        except Exception as e:
+            print(f"CPM Calculation Error: {e}")
+            import traceback
+            traceback.print_exc()
+            return {}
+
+    def _update_cpm_in_db(self, cpm_data):
+        """Update CPM calculations in database"""
+        from .database import Activity
+        
+        try:
+            for node_id, data in cpm_data.items():
+                activity = self.db.query(Activity).filter(
+                    Activity.activity_id == str(node_id)
+                ).first()
+                
+                if activity:
+                    activity.early_start = data['es']
+                    activity.early_finish = data['ef']
+                    activity.late_start = data['ls']
+                    activity.late_finish = data['lf']
+                    activity.total_float = data['total_float']
+                    activity.is_critical = 1 if data['is_critical'] else 0
+            
+            self.db.commit()
+        except Exception as e:
+            print(f"Error updating CPM in database: {e}")
+            self.db.rollback()
+
+    def identify_critical_path(self):
+        """
+        Identify and return the critical path activities
+        Returns list of node IDs on the critical path
+        """
+        if not self.cpm_calculated:
+            self.calculate_cpm_full()
+        
+        critical_activities = [
+            node for node in self.graph.nodes
+            if self.graph.nodes[node].get('is_critical', 0) == 1
+        ]
+        
+        return critical_activities
+
+    def map_variation_to_activities(self, variation_description, affected_items=None):
+        """
+        Map variation to affected activities based on description or BOQ items
+        Returns list of activity IDs that may be affected
+        """
+        affected_activities = []
+        
+        # Simple keyword matching for now
+        keywords = variation_description.lower().split()
+        
+        for node, data in self.graph.nodes(data=True):
+            activity_name = data.get('name', '').lower()
+            # Check if any keyword matches activity name
+            if any(keyword in activity_name for keyword in keywords if len(keyword) > 3):
+                affected_activities.append(node)
+        
+        return affected_activities
+
+    def adjust_activity_duration(self, activity_id, new_duration):
+        """
+        Adjust activity duration and recalculate CPM
+        Returns updated CPM data
+        """
+        if activity_id in self.graph.nodes:
+            self.graph.nodes[activity_id]['duration'] = new_duration
+            self.cpm_calculated = False
+            return self.calculate_cpm_full()
+        return None
+
+    def calculate_project_duration(self):
+        """Calculate total project duration using CPM"""
+        if not self.cpm_calculated:
+            cpm_data = self.calculate_cpm_full()
+            if cpm_data:
+                return max(data['ef'] for data in cpm_data.values())
+        
+        # Fallback to simple calculation
+        try:
             if not self.graph.nodes: return 0.0
             
             dist = {}
@@ -464,7 +904,8 @@ class TimeEngine:
 
     def calculate_eot(self, affected_task_name_query, extra_duration_days):
         """
-        Calculates Extension of Time by comparing project duration before and after delay.
+        Calculate Extension of Time with detailed breakdown
+        Returns (eot_days, breakdown_dict)
         """
         # Find task by name (fuzzy match)
         target_node = None
@@ -474,21 +915,91 @@ class TimeEngine:
                 break
         
         if not target_node:
-            return None, "Task not found relevant to query."
+            return None, {"error": "Task not found relevant to query."}
 
-        # Original Duration
-        original_duration = self.calculate_project_duration()
+        # Calculate CPM before change
+        original_cpm = self.calculate_cpm_full()
+        original_duration = max(data['ef'] for data in original_cpm.values())
+        original_critical = self.identify_critical_path()
         
-        # Apply Delay temporarily
+        # Apply delay
         old_task_duration = self.graph.nodes[target_node]['duration']
         self.graph.nodes[target_node]['duration'] += extra_duration_days
+        self.cpm_calculated = False
         
-        # New Duration
-        new_duration = self.calculate_project_duration()
+        # Calculate CPM after change
+        new_cpm = self.calculate_cpm_full()
+        new_duration = max(data['ef'] for data in new_cpm.values())
+        new_critical = self.identify_critical_path()
         
         # Revert change
         self.graph.nodes[target_node]['duration'] = old_task_duration
+        self.cpm_calculated = False
         
-        delay_impact = new_duration - original_duration
+        eot = new_duration - original_duration
         
-        return delay_impact, f"Task '{self.graph.nodes[target_node]['name']}' is on the critical path." if delay_impact > 0 else f"Task '{self.graph.nodes[target_node]['name']}' has float. No EOT required."
+        breakdown = {
+            'affected_activity': {
+                'id': target_node,
+                'name': self.graph.nodes[target_node]['name'],
+                'original_duration': old_task_duration,
+                'new_duration': old_task_duration + extra_duration_days,
+                'delay_added': extra_duration_days
+            },
+            'original_project_duration': original_duration,
+            'new_project_duration': new_duration,
+            'eot_days': eot,
+            'is_on_critical_path': target_node in original_critical,
+            'original_float': original_cpm.get(target_node, {}).get('total_float', 0),
+            'critical_path_changed': set(original_critical) != set(new_critical),
+            'justification': self._generate_eot_justification(
+                target_node, eot, original_cpm.get(target_node, {})
+            )
+        }
+        
+        return eot, breakdown
+
+    def generate_gantt_data(self):
+        """
+        Generate data for Gantt chart visualization
+        Returns list of activities with start/end timing
+        """
+        if not self.cpm_calculated:
+            self.calculate_cpm_full()
+            
+        gantt_data = []
+        cpm = self.calculate_cpm_full() # Ensure we have latest data
+        
+        # Sort by Early Start
+        sorted_nodes = sorted(cpm.keys(), key=lambda x: cpm[x]['es'])
+        
+        for node_id in sorted_nodes:
+            data = cpm[node_id]
+            gantt_data.append({
+                'id': node_id,
+                'name': data['name'],
+                'start_day': data['es'],
+                'end_day': data['ef'],
+                'duration': data['duration'],
+                'is_critical': data['is_critical'],
+                'total_float': data['total_float']
+            })
+            
+        return gantt_data
+
+    def _generate_eot_justification(self, activity_id, eot, cpm_data):
+        """Generate justification text for EOT claim"""
+        activity_name = self.graph.nodes[activity_id].get('name', activity_id)
+        total_float = cpm_data.get('total_float', 0)
+        
+        if eot > 0:
+            if total_float < 0.01:
+                return f"Activity '{activity_name}' is on the critical path with zero float. " \
+                       f"Any delay to this activity directly impacts project completion. " \
+                       f"EOT of {eot:.1f} days is justified."
+            else:
+                return f"Activity '{activity_name}' had {total_float:.1f} days of float. " \
+                       f"The delay exceeded the available float, resulting in EOT of {eot:.1f} days."
+        else:
+            return f"Activity '{activity_name}' has {total_float:.1f} days of float. " \
+                   f"The delay is absorbed within the float. No EOT required."

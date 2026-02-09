@@ -1,0 +1,33 @@
+﻿Testing Health...
+Health OK
+Testing Upload...
+Upload OK. Project ID: 20
+Testing Chat Variation (Multi-turn FIDIC Workflow)...
+  Turn 1: Initial Request
+  Response: {
+  "reply": "You want to change the quantity of brickwork. This seems to relate to a change in the amount of work. To proceed, we need to identify the type of variation. The FIDIC variation types are: Type 1 - Quantity Changes, Type 2 - Quality/Characteristics Changes, Type 3 - Levels/Positions/Dimensions Changes, Type 4 - Omission of Work, Type 5 - Additional Work/Plant/Materials, Type 6 - Sequence/Timing Changes. Based on your query, it seems like Type 1: Quantity Changes might be the most relevant. Is that correct?",
+  "proposal": null,
+  "session_id": 18,
+  "workflow_state": "type_selection"
+}
+  Turn 2: Selecting Type 1
+  Response: {
+  "reply": "You have confirmed that the change in brickwork quantity is a Type 1 Quantity change. I will now guide you through the process of assessing and pricing this variation. Please provide more details about the change, such as the original quantity, the new quantity, and any other relevant information.",
+  "proposal": null,
+  "session_id": 18,
+  "workflow_state": "variation_details"
+}
+  Turn 3: Providing item details
+  Response: {
+  "reply": "You have confirmed a Type 1 Quantity change for Item 3 Brickwork, changing the quantity from 200 to 250. I will now calculate the price adjustment for this variation.",
+  "proposal": null,
+  "session_id": 18,
+  "workflow_state": "pricing"
+}
+  Turn 4: No additional files
+  Response: {
+  "reply": "Based on the provided information, I have evaluated the change in brickwork quantity from 200 to 250 for Item 3. Since this is a Type 1 Quantity change, the price adjustment will be calculated accordingly. The proposal for this variation is generated as follows: The original quantity of brickwork was 200, and the new quantity is 250, resulting in an increase of 50 units. Please note that the actual price adjustment will depend on the unit rate specified in the contract. If you need further assistance or would like to proceed with the pricing, please let me know.",
+  "proposal": null,
+  "session_id": 18,
+  "workflow_state": "variation_proposal"
+}
