@@ -20,7 +20,7 @@ class MLModel:
 
     def fit_boq(self, boq_items):
         if not boq_items: return
-        data = [{'id': item.id, 'description': item.description, 'rate': item.rate, 'quantity': item.quantity} for item in boq_items]
+        data = [{'id': item.id, 'project_id': item.project_id, 'description': item.description, 'rate': item.rate, 'quantity': item.quantity, 'is_fixed_rate': item.is_fixed_rate} for item in boq_items]
         self.boq_df = pd.DataFrame(data)
         self.tfidf_matrix = self.vectorizer.fit_transform(self.boq_df['description'])
 
@@ -46,17 +46,25 @@ class MLModel:
         elif "carpet" in desc: base_productivity = 100.0
         return base_productivity / complexity_factor
 
-    def parse_instruction(self, text, project_context=None):
+    def parse_instruction(self, text, project_context=None, chat_history=None):
         context_str = f"\nPROJECT BOQ CONTEXT (Samples):\n{project_context}" if project_context else ""
+        history_str = ""
+        if chat_history:
+            history_str = "\nCONVERSATION HISTORY:\n" + "\n".join([f"{m['role'].upper()}: {m['content']}" for m in chat_history])
+            
         prompt = f"""
-        You are an Expert AI Quantity Surveyor and Variation Assistant.
+        You are an Expert AI Quantity Surveyor (QS) and Variation Assistant.
         User Query: "{text}"
+        {history_str}
         {context_str}
 
         Instructions:
-        1. Analyze the query against the Project BOQ provided.
-        2. If the user wants to evaluate a variation, identify the EXACT item from context.
-        3. Respond to the user naturally as a Quantity Surveyor.
+        1. Analyze the query against the Project BOQ and conversation history.
+        2. If the user wants to evaluate a variation:
+           - Identify the EXACT item from context.
+           - PROACTIVELY ASK: "Do you have any additional files (HSR, BSR, or Quotations) required to calculate this variation?" if you are unsure or haven't seen them yet.
+        3. Respond to the user naturally as a professional QS.
+        4. Maintain context of previous items discussed.
         
         MANDATORY JSON Output Format:
         {{

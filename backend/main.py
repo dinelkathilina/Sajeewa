@@ -40,7 +40,7 @@ def read_root():
     return {"message": "Construction Variation Chatbot API is running"}
 
 from .engine import CostEngine, TimeEngine
-from .database import Project, BOQItem
+from .database import Project, BOQItem, ChatMessage
 
 @app.post("/upload/files")
 async def upload_files(
@@ -97,22 +97,43 @@ class ChatRequest(pydantic.BaseModel):
 @app.post("/chat")
 async def chat(request: ChatRequest, db: Session = Depends(get_db)):
     cost_engine = CostEngine(db)
-    # 1. Train and Get Context (Search for relevant items using ML similarity)
+    print(f"DEBUG: Chat request for project {request.project_id}: {request.message}")
+    # 1. Save User Message
+    user_msg = ChatMessage(project_id=request.project_id, role='user', content=request.message)
+    db.add(user_msg)
+    db.commit()
+    print("DEBUG: User message saved.")
+
+    # 2. Get Chat History (last 10 messages)
+    history_objs = db.query(ChatMessage).filter(ChatMessage.project_id == request.project_id).order_by(ChatMessage.timestamp.desc()).limit(11).all()
+    chat_history = [{"role": msg.role, "content": msg.content} for msg in reversed(history_objs[1:])]
+    print(f"DEBUG: Retrieved {len(chat_history)} messages from history.")
+
+    # 3. Train and Get Context
     cost_engine.train_model(request.project_id)
-    
+    print("DEBUG: Engine trained.")
     project = db.query(Project).filter(Project.id == request.project_id).first()
     proj_name = project.name if project else "Unknown Project"
     
-    # Use ML model to find top 15 most relevant items for the context
     relevant_matches = cost_engine.ml_model.find_similar_item(request.message, top_n=15)
     if not isinstance(relevant_matches, list):
         relevant_matches = [relevant_matches] if relevant_matches else []
         
     context_str = f"PROJECT NAME: {proj_name}\n"
     context_str += "\n".join([f"- {i['description']} (Rate: {i['rate']}, Qty: {i['quantity']})" for i in relevant_matches if i])
+    print("DEBUG: Context prepared.")
 
-    # 2. Parse/Reason with Context
-    ai_result = cost_engine.ml_model.parse_instruction(request.message, project_context=context_str)
+    # 4. Parse/Reason with Context and History
+    try:
+        ai_result = cost_engine.ml_model.parse_instruction(
+            request.message, 
+            project_context=context_str, 
+            chat_history=chat_history
+        )
+        print("DEBUG: AI parse_instruction complete.")
+    except Exception as e:
+        print(f"DEBUG: AI FAIL: {e}")
+        raise e
     
     if not ai_result:
         return {"reply": "Connection error with AI service.", "proposal": None}
@@ -171,6 +192,11 @@ async def chat(request: ChatRequest, db: Session = Depends(get_db)):
                     response_text += "\n(Note: The schedule file was found but couldn't be parsed.)"
             else:
                 response_text += "\n(Note: No project schedule (MSP/Excel) found to evaluate time impact.)"
+
+    # 6. Save AI Response
+    ai_msg = ChatMessage(project_id=request.project_id, role='ai', content=response_text)
+    db.add(ai_msg)
+    db.commit()
 
     return {
         "reply": response_text,

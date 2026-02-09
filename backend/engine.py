@@ -256,12 +256,12 @@ class CostEngine:
             new_rate = self.derive_star_rate(new_material)
         else:
             # Check FIDIC 12.3 thresholds
+            # Unit cost change % is often complex to derive without full breakdown, 
+            # so we'll allow it to be passed or default it to 0 for initial check.
             new_rate = self.calculate_new_rate(
-                similar_item['description'], 
-                original_rate, 
-                qty_change_pct, 
-                amt_change_pct, 
-                10.0 # Unit cost change pct threshold
+                similar_item, 
+                qty_change,
+                1.1 # Defaulting unit cost change to >1% if requested generally
             )
 
         impact = (new_rate * (original_qty + qty_change)) - (original_rate * original_qty)
@@ -276,32 +276,90 @@ class CostEngine:
             "is_star_rate": new_rate != original_rate
         }
 
-    def calculate_new_rate(self, item_description, original_rate, qty_change_pct, amt_change_pct, unit_cost_change_pct):
+    def calculate_new_rate(self, item, qty_change, unit_cost_change_pct=0.0):
         """
-        Implements FIDIC 12.3 logic to determine if a new rate is applicable.
+        Implements FIDIC 12.3 logic to determine if a new rate is appropriate.
+        Rules:
+        a) qty changed by > 10%
+        b) (qty_change * rate) > 0.01% of Accepted Contract Amount
+        c) cost per unit changed by > 1%
+        d) item is not a "fixed rate item"
         """
-        is_qty = abs(qty_change_pct) > 10.0
-        is_amt = amt_change_pct > 0.01 
-        is_cost = unit_cost_change_pct > 1.0
+        original_qty = item.get('quantity', 0.0)
+        original_rate = item.get('rate', 0.0)
+        is_fixed = item.get('is_fixed_rate', 0) == 1
+        
+        if is_fixed:
+            return original_rate
 
-        if is_qty and is_amt and is_cost:
-            return self.derive_star_rate(item_description)
+        project = self.db.query(Project).filter(Project.id == item['project_id']).first()
+        contract_amount = project.accepted_contract_amount if project else 0.0
+        
+        qty_change_pct = (abs(qty_change) / original_qty * 100.0) if original_qty > 0 else 0.0
+        value_change = abs(qty_change) * original_rate
+        threshold_01_pct = 0.0001 * contract_amount
+        
+        is_qty_rule = qty_change_pct > 10.0
+        is_val_rule = value_change > threshold_01_pct and contract_amount > 0
+        is_cost_rule = unit_cost_change_pct > 1.0
+        
+        if is_qty_rule and is_val_rule and is_cost_rule:
+             # Try to derive from similar characters or HSR/BSR
+             return self.derive_star_rate(item['description'], project_id=item['project_id'])
+             
         return original_rate
 
-    def derive_star_rate(self, description):
+    def derive_star_rate(self, description, project_id=None):
         """
-        Derives a new rate using ML similarity search or breakdown analysis.
+        Derives a new rate using ML similarity search, breakdown analysis,
+        or searching external HSR/BSR files.
         """
+        # 1. Search existing BOQ for similar
         similar_item = self.ml_model.find_similar_item(description)
-        
-        if similar_item:
-            # Try to get detailed breakdown if it exists
+        if similar_item and similar_item['similarity'] > 0.8:
             breakdown = self.db.query(RateBreakdown).filter(RateBreakdown.item_ref == similar_item.get('item_number')).first()
             if breakdown:
                 return breakdown.total_rate
             return similar_item.get('rate', 0.0)
+
+        # 2. Search HSR/BSR/Quotation files
+        return self.search_external_rates(description)
+
+    def search_external_rates(self, description):
+        """
+        Searches through HSR, BSR, and Quotation files in the upload directory.
+        """
+        upload_dir = "uploaded_files"
+        if not os.path.exists(upload_dir):
+            return 0.0
             
-        return 0.0 # Fallback
+        for filename in os.listdir(upload_dir):
+            if any(k in filename.upper() for k in ["HSR", "BSR", "QUOTATION"]):
+                path = os.path.join(upload_dir, filename)
+                # Simple keyword search in CSV/Excel for external rates
+                try:
+                    if path.endswith('.csv'):
+                        df = pd.read_csv(path)
+                    else:
+                        df = pd.read_excel(path)
+                    
+                    # Fuzzy match description in the dataframe
+                    # Search columns that look like descriptions
+                    desc_cols = [c for c in df.columns if any(k in str(c).lower() for k in ['desc', 'item', 'work'])]
+                    rate_cols = [c for c in df.columns if any(k in str(c).lower() for k in ['rate', 'price', 'unit rate'])]
+                    
+                    if desc_cols and rate_cols:
+                        for _, row in df.iterrows():
+                            # Simple keyword match
+                            row_desc = str(row[desc_cols[0]]).lower()
+                            if all(word in row_desc for word in description.lower().split()[:3]): # Match first 3 words
+                                try:
+                                    return float(str(row[rate_cols[0]]).replace(',', ''))
+                                except: continue
+                except Exception as e:
+                    print(f"Error searching in {filename}: {e}")
+        
+        return 0.0 
 
 class TimeEngine:
     def __init__(self):

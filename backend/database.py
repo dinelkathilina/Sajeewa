@@ -15,11 +15,23 @@ class Project(Base):
     name = Column(String, index=True)
     description = Column(String, nullable=True)
     boq_filename = Column(String, nullable=True)
+    accepted_contract_amount = Column(Float, default=0.0)
     created_at = Column(DateTime, default=datetime.utcnow)
     
     boq_items = relationship("BOQItem", back_populates="project")
     rate_breakdowns = relationship("RateBreakdown", back_populates="project")
     variations = relationship("Variation", back_populates="project")
+    chat_history = relationship("ChatMessage", back_populates="project")
+
+class ChatMessage(Base):
+    __tablename__ = "chat_messages"
+    id = Column(Integer, primary_key=True, index=True)
+    project_id = Column(Integer, ForeignKey("projects.id"))
+    role = Column(String) # 'user' or 'ai'
+    content = Column(String)
+    timestamp = Column(DateTime, default=datetime.utcnow)
+    
+    project = relationship("Project", back_populates="chat_history")
 
 class BOQItem(Base):
     __tablename__ = "boq_items"
@@ -31,6 +43,7 @@ class BOQItem(Base):
     quantity = Column(Float)
     rate = Column(Float)
     amount = Column(Float)
+    is_fixed_rate = Column(Integer, default=0) # 0 for false, 1 for true
     
     project = relationship("Project", back_populates="boq_items")
 
