@@ -7,15 +7,13 @@ import shutil
 import pydantic
 import os
 from datetime import datetime
-from .database import engine, init_db, SessionLocal
-from sqlalchemy.orm import Session as DBSession
+from .storage_manager import StorageManager, storage_manager
 from dotenv import load_dotenv
 
 # Load .env
 load_dotenv()
 
-# Initialize DB
-init_db()
+# storage_manager is initialized in its own module
 
 app = FastAPI(
     title="ML Construction Variation Evaluation System",
@@ -33,16 +31,11 @@ app.add_middleware(
 )
 
 # Dependency
-def get_db():
-    db = SessionLocal()
-    try:
-        yield db
-    finally:
-        db.close()
+def get_storage() -> StorageManager:
+    return storage_manager
 
 # Import engines and managers
 from .engine import CostEngine, TimeEngine
-from .database import Project, BOQItem, ChatMessage, VariationType, Variation
 from .session_manager import SessionManager
 from .validation_engine import ValidationEngine
 from .ocr_processor import ocr_processor
@@ -62,18 +55,16 @@ def health_check():
     return {"status": "healthy", "timestamp": datetime.utcnow().isoformat()}
 
 @app.get("/variation-types")
-def get_variation_types(db: DBSession = Depends(get_db)):
-    """Get all FIDIC variation types"""
-    types = db.query(VariationType).all()
+def get_variation_types():
+    """Get all FIDIC variation types (Static for now)"""
     return {
         "variation_types": [
-            {
-                "id": t.id,
-                "code": t.code,
-                "name": t.name,
-                "description": t.description
-            }
-            for t in types
+            {"id": 1, "code": "TYPE1", "name": "Quantity Changes", "description": "Changes in the quantity of any item of work included in the Contract"},
+            {"id": 2, "code": "TYPE2", "name": "Quality/Characteristics Changes", "description": "Changes in the quality or other characteristics of any item of work"},
+            {"id": 3, "code": "TYPE3", "name": "Levels/Positions/Dimensions Changes", "description": "Changes in the levels, positions and/or dimensions of any part of the Works"},
+            {"id": 4, "code": "TYPE4", "name": "Omission of Work", "description": "Omission of any work unless it is to be carried out by others"},
+            {"id": 5, "code": "TYPE5", "name": "Additional Work/Plant/Materials", "description": "Any additional work, Plant, Materials or services necessary for the Works"},
+            {"id": 6, "code": "TYPE6", "name": "Sequence/Timing Changes", "description": "Changes to the sequence or timing of the execution of the Works"}
         ]
     }
 
@@ -86,7 +77,7 @@ async def upload_files(
     boq: UploadFile = File(None),
     breakdown: UploadFile = File(None),
     schedule: UploadFile = File(None),
-    db: DBSession = Depends(get_db)
+    storage: StorageManager = Depends(get_storage)
 ):
     """
     Upload core project files (BOQ, Rate Breakdown, Schedule)
@@ -98,31 +89,29 @@ async def upload_files(
         
         # Create Project
         proj_name = boq.filename.split('.')[0] if boq else f"Project_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
-        project = Project(
+        project = storage.create_project(
             name=proj_name,
             boq_filename=boq.filename if boq else None,
             rate_breakdown_filename=breakdown.filename if breakdown else None,
             schedule_filename=schedule.filename if schedule else None
         )
-        db.add(project)
-        db.commit()
-        db.refresh(project)
+        project_id = project["id"]
         
         # Initialize engines
-        cost_engine = CostEngine(db)
-        time_engine = TimeEngine(db_session=db)
+        cost_engine = CostEngine(storage)
+        time_engine = TimeEngine(storage=storage)
         
         # Initialize session manager and create default session
-        session_manager = SessionManager(db)
+        session_manager = SessionManager(storage)
         session = session_manager.create_session(
-            project_id=project.id,
+            project_id=project_id,
             metadata={"created_via": "file_upload", "files_uploaded": []}
         )
         
         results = {
-            "project_id": project.id,
-            "session_id": session.id,
-            "session_key": session.session_key,
+            "project_id": project_id,
+            "session_id": session["id"],
+            "session_key": session["session_key"],
             "boq_items": 0,
             "rate_breakdowns": 0,
             "schedule_tasks": 0,
@@ -144,54 +133,37 @@ async def upload_files(
                     "errors": validation['errors']
                 })
 
-            results["boq_items"] = cost_engine.load_boq(path, project.id)
-            results["processing_notes"].append(f"✓ BOQ processed: {results['boq_items']} items")
+            boq_data = cost_engine.load_boq(path, project_id) # Returns dict of sheets
+            total_items = 0
+            for sheet_name, items in boq_data.items():
+                count = storage.add_boq_items(project_id, items, sheet_name)
+                total_items += count
+            
+            results["boq_items"] = total_items
+            results["processing_notes"].append(f"✓ BOQ processed: {total_items} items across {len(boq_data)} sheets")
             
             # Update session metadata
-            session_manager.update_session_metadata(session.id, {
+            session_manager.update_session_metadata(project_id, session["id"], {
                 "files_uploaded": ["boq"]
             })
         
-        # Process Rate Breakdown (with OCR support for PDF)
+        # Process Rate Breakdown
         if breakdown:
             path = os.path.join(upload_dir, breakdown.filename)
             with open(path, "wb") as buffer:
                 shutil.copyfileobj(breakdown.file, buffer)
             
-            # Check if PDF
+            # Rate breakdown processing
             if ocr_processor.is_pdf(path):
-                results["processing_notes"].append("📄 PDF detected - Starting OCR processing...")
-                
-                # Process with OCR
-                df = ocr_processor.process_pdf(
-                    path,
-                    progress_callback=lambda msg: print(f"OCR: {msg}")
-                )
-                
-                if df is not None and not df.empty:
-                    # Validate OCR results
-                    validation = ocr_processor.validate_extracted_data(df)
-                    
-                    if validation['valid']:
-                        # Convert DataFrame to rate breakdown format and save
-                        results["rate_breakdowns"] = cost_engine.save_rate_breakdown_df(df, project.id)
-                        results["processing_notes"].append(f"✓ OCR successful: {results['rate_breakdowns']} items extracted")
-                        
-                        if validation['warnings']:
-                            results["processing_notes"].extend([f"⚠ {w}" for w in validation['warnings']])
-                    else:
-                        results["processing_notes"].append(f"✗ OCR validation failed: {validation['errors']}")
-                else:
-                    results["processing_notes"].append("⚠ OCR returned no data - trying standard parser")
-                    results["rate_breakdowns"] = cost_engine.load_rate_breakdown(path, project.id)
+                df = ocr_processor.process_pdf(path)
+                if df is not None:
+                    items = cost_engine.save_rate_breakdown_df(df, project_id)
+                    results["rate_breakdowns"] = storage.add_rate_breakdowns(project_id, items)
             else:
-                # Standard Excel/CSV processing
-                results["rate_breakdowns"] = cost_engine.load_rate_breakdown(path, project.id)
-                results["processing_notes"].append(f"✓ Rate breakdown processed: {results['rate_breakdowns']} items")
+                items = cost_engine.load_rate_breakdown(path, project_id)
+                results["rate_breakdowns"] = storage.add_rate_breakdowns(project_id, items)
             
-            session_manager.update_session_metadata(session.id, {
-                "files_uploaded": ["boq", "breakdown"]
-            })
+            results["processing_notes"].append(f"✓ Rate breakdown processed: {results['rate_breakdowns']} items")
         
         # Process Schedule
         if schedule:
@@ -199,19 +171,9 @@ async def upload_files(
             with open(path, "wb") as buffer:
                 shutil.copyfileobj(schedule.file, buffer)
             
-            results["schedule_tasks"] = time_engine.parse_schedule(path, project_id=project.id)
+            activities = time_engine.parse_schedule(path, project_id=project_id)
+            results["schedule_tasks"] = storage.add_activities(project_id, activities)
             results["processing_notes"].append(f"✓ Schedule processed: {results['schedule_tasks']} activities")
-            
-            # Calculate CPM
-            if results["schedule_tasks"] > 0:
-                cpm_data = time_engine.calculate_cpm_full()
-                critical_activities = time_engine.identify_critical_path()
-                results["critical_path_activities"] = len(critical_activities)
-                results["processing_notes"].append(f"✓ CPM calculated: {len(critical_activities)} critical activities")
-            
-            session_manager.update_session_metadata(session.id, {
-                "files_uploaded": ["boq", "breakdown", "schedule"]
-            })
         
         return {"status": "success", "data": results}
         
@@ -221,10 +183,14 @@ async def upload_files(
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
 
+@app.get("/projects")
+def get_projects(storage: StorageManager = Depends(get_storage)):
+    """List all projects"""
+    return {"projects": storage.get_projects()}
+
 @app.post("/upload/quotation")
 async def upload_quotation(
-    file: UploadFile = File(...),
-    db: DBSession = Depends(get_db)
+    file: UploadFile = File(...)
 ):
     """
     Upload a vendor quotation (PDF, Excel, CSV)
@@ -266,12 +232,10 @@ async def upload_additional_files(
     variation_id: Optional[int] = Form(None),
     file_type: str = Form(...),  # 'bsr', 'hsr', 'quotation', 'specification', 'drawing'
     files: List[UploadFile] = File(...),
-    db: DBSession = Depends(get_db)
+    storage: StorageManager = Depends(get_storage)
 ):
     """Upload additional supporting files (BSR, HSR, Quotations, etc.)"""
     try:
-        from .database import AdditionalFile
-        
         upload_dir = "uploaded_files/additional"
         os.makedirs(upload_dir, exist_ok=True)
         
@@ -283,22 +247,20 @@ async def upload_additional_files(
             with open(file_path, "wb") as buffer:
                 shutil.copyfileobj(file.file, buffer)
             
-            # Create database record
-            additional_file = AdditionalFile(
-                project_id=project_id,
-                variation_id=variation_id,
-                filename=file.filename,
-                file_type=file_type,
-                file_path=file_path
-            )
-            db.add(additional_file)
+            # Create record in storage
+            file_data = {
+                "variation_id": variation_id,
+                "filename": file.filename,
+                "file_type": file_type,
+                "file_path": file_path
+            }
+            storage.add_additional_file(project_id, file_data)
+            
             uploaded_files.append({
                 "filename": file.filename,
                 "type": file_type,
                 "size": os.path.getsize(file_path)
             })
-        
-        db.commit()
         
         return {
             "status": "success",
@@ -320,49 +282,39 @@ async def upload_additional_files(
 def create_session(
     project_id: int,
     metadata: Optional[Dict] = None,
-    db: DBSession = Depends(get_db)
+    storage: StorageManager = Depends(get_storage)
 ):
     """Create a new conversation session"""
-    session_manager = SessionManager(db)
+    session_manager = SessionManager(storage)
     session = session_manager.create_session(project_id, metadata)
-    
-    return {
-        "session_id": session.id,
-        "session_key": session.session_key,
-        "project_id": session.project_id,
-        "status": session.status
-    }
+    return session
 
-@app.get("/session/{session_id}")
-def get_session(session_id: int, db: DBSession = Depends(get_db)):
+@app.get("/session/{project_id}/{session_id}")
+def get_session(project_id: int, session_id: int, storage: StorageManager = Depends(get_storage)):
     """Get session context"""
-    session_manager = SessionManager(db)
-    context = session_manager.get_session_context(session_id)
-    
+    session_manager = SessionManager(storage)
+    context = session_manager.get_session_context(project_id, session_id)
     if not context:
         raise HTTPException(status_code=404, detail="Session not found")
-    
     return context
 
-@app.post("/session/{session_id}/continue")
-def continue_session(session_id: int, db: DBSession = Depends(get_db)):
+@app.post("/session/{project_id}/{session_id}/continue")
+def continue_session(project_id: int, session_id: int, storage: StorageManager = Depends(get_storage)):
     """Continue an existing session"""
-    session_manager = SessionManager(db)
+    session_manager = SessionManager(storage)
     try:
-        context = session_manager.continue_session(session_id)
+        context = session_manager.continue_session(project_id, session_id)
         return {"status": "success", "context": context}
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
 
-@app.post("/session/{session_id}/close")
-def close_session(session_id: int, db: DBSession = Depends(get_db)):
+@app.post("/session/{project_id}/{session_id}/close")
+def close_session(project_id: int, session_id: int, storage: StorageManager = Depends(get_storage)):
     """Close/complete a session"""
-    session_manager = SessionManager(db)
-    success = session_manager.close_session(session_id)
-    
+    session_manager = SessionManager(storage)
+    success = session_manager.close_session(project_id, session_id)
     if not success:
         raise HTTPException(status_code=404, detail="Session not found")
-    
     return {"status": "success", "message": "Session closed"}
 
 # ============================================================================
@@ -375,79 +327,66 @@ class ChatRequest(pydantic.BaseModel):
     session_id: Optional[int] = None
 
 @app.post("/chat")
-async def chat(request: ChatRequest, db: DBSession = Depends(get_db)):
+async def chat(request: ChatRequest, storage: StorageManager = Depends(get_storage)):
     """
     Enhanced chat endpoint with FIDIC workflow support
-    Handles variation type selection, details collection, and evaluation
     """
     try:
         # Initialize managers and engines
-        session_manager = SessionManager(db)
-        cost_engine = CostEngine(db)
-        time_engine = TimeEngine(db_session=db)
+        session_manager = SessionManager(storage)
+        cost_engine = CostEngine(storage)
+        time_engine = TimeEngine(storage=storage)
         
         # Get or create session
+        project_id = request.project_id
         if request.session_id:
-            session = session_manager.get_session(request.session_id)
+            session = session_manager.get_session(project_id, request.session_id)
             if not session:
                 raise HTTPException(status_code=404, detail="Session not found")
         else:
-            # Create new session
-            session = session_manager.create_session(request.project_id)
+            session = session_manager.create_session(project_id)
         
-        print(f"DEBUG: Chat request for project {request.project_id}, session {session.id}: {request.message}")
+        session_id = session["id"]
         
         # Save user message
-        session_manager.add_message(session.id, "user", request.message)
+        session_manager.add_message(project_id, session_id, "user", request.message)
         
         # Get conversation history
-        history = session_manager.get_conversation_history(session.id, limit=10)
+        history = session_manager.get_conversation_history(project_id, session_id, limit=10)
         
         # 2. Enrich Context for AI
-        cost_engine.train_model(request.project_id)
-        session_metadata = session.session_metadata or {}
+        cost_engine.train_model(project_id)
+        session_metadata = session.get("session_metadata", {})
         collected_details = session_metadata.get('collected_details', {})
         
-        # Build a search query from current message + key context keywords
         search_query = request.message
-        
-        # If message is short (e.g. just a number), use previously mentioned items
         if len(request.message.split()) < 4:
             affected_items = collected_details.get('affected_items', [])
             if affected_items:
                 search_query += " " + " ".join(affected_items)
-            
-            # Also look at last few user messages for keywords
             user_history = [m['content'] for m in history if m['role'] == 'user'][-3:]
             search_query += " " + " ".join(user_history)
 
-        # Get relevant BOQ items based on enriched query
+        # Get relevant BOQ items
         relevant_matches = cost_engine.ml_model.find_similar_item(search_query, top_n=20)
-        if not isinstance(relevant_matches, list):
-            relevant_matches = [relevant_matches] if relevant_matches else []
         
-        project = db.query(Project).filter(Project.id == request.project_id).first()
-        proj_name = project.name if project else "Unknown Project"
+        project = storage.get_project(project_id)
+        proj_name = project.get("name", "Unknown Project")
         
         context_str = f"PROJECT NAME: {proj_name}\n"
         context_str += "AVAIALBLE BOQ ITEMS (Top Matches):\n"
         context_str += "\n".join([f"- {i['description']} (Ref: {i['item_number']}, Rate: {i['rate']}, Qty: {i['quantity']})" for i in relevant_matches if i])
         
         # Get relevant activities
-        from .database import Activity
-        activities = db.query(Activity).filter(Activity.project_id == request.project_id).all()
-        # Filter for activities relevant to the current search query
-        # Since we have few activities, we can just list top 10 relevant or similar
-        # For a simple demo/test, just list activities that mention keywords
+        activities = project.get("activities", [])
         keywords = search_query.lower().split()
-        relevant_activities = [a for a in activities if any(k in a.name.lower() for k in keywords)]
+        relevant_activities = [a for a in activities if any(k in a.get('name', '').lower() for k in keywords)]
         
         context_str += "\n\nAVAIALBLE ACTIVITIES (Top Matches):\n"
         if relevant_activities:
-            context_str += "\n".join([f"- {a.name} (Duration: {a.duration}d, Start: Day {a.start_day}, Critical: {a.is_critical})" for a in relevant_activities[:10]])
+            context_str += "\n".join([f"- {a.get('name')} (Duration: {a.get('duration')}d, Critical: {a.get('is_critical')})" for a in relevant_activities[:10]])
         else:
-            # Fallback to listing a few activities
-            context_str += "\n".join([f"- {a.name} (Duration: {a.duration}d, Critical: {a.is_critical})" for a in activities[:5]])
+            context_str += "\n".join([f"- {a.get('name')} (Duration: {a.get('duration')}d, Critical: {a.get('is_critical')})" for a in activities[:5]])
         
         # 3. Parse instruction with workflow support
         ai_result = cost_engine.ml_model.parse_instruction(
@@ -458,7 +397,7 @@ async def chat(request: ChatRequest, db: DBSession = Depends(get_db)):
         )
         
         if not ai_result:
-            return {"reply": "Connection error with AI service.", "proposal": None, "session_id": session.id}
+            return {"reply": "Connection error with AI service.", "proposal": None, "session_id": session_id}
         
         response_text = ai_result.get('reply', "How can I help you today?")
         workflow_state = ai_result.get('workflow_state')
@@ -466,142 +405,33 @@ async def chat(request: ChatRequest, db: DBSession = Depends(get_db)):
         
         # Handle workflow states
         if workflow_state == "type_selection":
-            # User is selecting variation type
             suggested_type = ai_result.get('suggested_type')
             if suggested_type:
-                session_manager.update_session_metadata(session.id, {
-                    "variation_type": suggested_type
-                })
+                session_manager.update_session_metadata(project_id, session_id, {"variation_type": suggested_type})
         
         elif workflow_state == "collecting_details":
-            # Collecting variation details
             extracted_data = ai_result.get('extracted_data', {})
             current_details = session_metadata.get('collected_details', {})
             current_details.update({k: v for k, v in extracted_data.items() if v is not None})
             
-            # Reset complete if AI wants to ask more, or set if AI says so
-            is_complete = extracted_data.get('complete', False)
+            session_manager.update_session_metadata(project_id, session_id, {"collected_details": current_details})
             
-            session_manager.update_session_metadata(session.id, {
-                "collected_details": current_details
-            })
-            
-            if is_complete:
-                # Trigger full evaluation
-                print(f"DEBUG: Triggering full evaluation for session {session.id}")
-                eval_result = cost_engine.evaluate_variation_full(
-                    current_details,
-                    request.project_id,
-                    session.id
-                )
-                
+            if extracted_data.get('complete'):
+                eval_result = cost_engine.evaluate_variation_full(current_details, project_id, session_id)
                 if eval_result:
                     proposal_data = eval_result
-                    # Generate PDF report
                     from .pdf_utils import PDFGenerator
                     pdf_gen = PDFGenerator()
                     output_path = f"variation_proposal_{eval_result['variation_id']}.pdf"
-                    # In a real app, this would be a proper storage path
                     try:
                         pdf_path = pdf_gen.generate_variation_proposal(eval_result, output_path)
                         proposal_data['pdf_url'] = f"http://localhost:8000/download/{os.path.basename(pdf_path)}"
-                        response_text += f"\n\nEvaluation complete! I've calculated a cost impact of ${eval_result['cost_impact']:,.2f} and a time impact of {eval_result['time_impact']} days. You can download the proposal report here: {proposal_data['pdf_url']}"
+                        response_text += f"\n\nEvaluation complete! I've calculated a cost impact of ${eval_result['cost_impact']:,.2f} and a time impact of {eval_result['time_impact']} days. You can download the report here: {proposal_data['pdf_url']}"
                     except Exception as e:
-                        print(f"PDF Generation failed: {e}")
-                        response_text += "\n\nEvaluation complete, but I couldn't generate the PDF report. You can review the details below."
-        
-        elif workflow_state == "evaluation":
-            # Execute evaluation command
-            cmd = ai_result.get('command')
-            
-            if cmd and cmd.get('intent'):
-                intent = cmd['intent']
-                desc_query = cmd.get('description')
-                
-                if intent in ['change_spec', 'change_qty']:
-                    qty_change = cmd.get('quantity', 0) if intent == 'change_qty' else 0
-                    new_mat = cmd.get('new_material') if intent == 'change_spec' else None
-                    
-                    variation_result = cost_engine.evaluate_variation(
-                        desc_query,
-                        new_material=new_mat,
-                        qty_change=qty_change
-                    )
-                    
-                    if variation_result:
-                        # Save to Database as Draft Variation
-                        new_variation = Variation(
-                            project_id=request.project_id,
-                            session_id=session.id,
-                            description=f"Variation: {desc_query}",
-                            status="Draft",
-                            cost_impact=variation_result.get('cost_impact', 0),
-                            time_impact=0
-                        )
-                        db.add(new_variation)
-                        db.commit()
-                        db.refresh(new_variation)
-                        
-                        # Save Detail
-                        new_detail = VariationDetail(
-                            variation_id=new_variation.id,
-                            boq_item_id=variation_result.get('item_id'),
-                            original_description=variation_result.get('original_item'),
-                            new_description=variation_result.get('new_item'),
-                            original_quantity=variation_result.get('original_qty', 0),
-                            new_quantity=variation_result.get('new_qty', 0) if intent == 'change_spec' else (variation_result.get('original_qty', 0) + qty_change),
-                            original_rate=variation_result.get('original_rate', 0),
-                            new_rate=variation_result.get('new_rate', 0),
-                            rate_source=variation_result.get('rate_source'),
-                            cost_impact=variation_result.get('cost_impact', 0)
-                        )
-                        db.add(new_detail)
-                        db.commit()
-                        
-                        proposal_data = variation_result
-                        proposal_data['variation_id'] = new_variation.id
-                    else:
-                        response_text += f"\\n(Note: I couldn't find an exact match for '{desc_query}' in the database to calculate costs.)"
-                
-                elif intent == 'delay':
-                    # Time Impact Analysis
-                    task_name_query = cmd.get('description')
-                    delay_days = cmd.get('quantity', 0)
-                    
-                    # Parse schedule if not already done
-                    if not time_engine.graph.nodes:
-                        schedule_path = None
-                        if os.path.exists("uploaded_files"):
-                            for f in os.listdir("uploaded_files"):
-                                if f.endswith((".xml", ".csv", ".xlsx")) and ("plan" in f.lower() or "schedule" in f.lower()):
-                                    schedule_path = os.path.join("uploaded_files", f)
-                                    break
-                        
-                        if schedule_path:
-                            time_engine.parse_schedule(schedule_path, project_id=request.project_id)
-                    
-                    if time_engine.graph.nodes:
-                        eot, breakdown = time_engine.calculate_eot(task_name_query, delay_days)
-                        
-                        if eot is not None:
-                            proposal_data = {
-                                "item_id": "TIME",
-                                "original_item": "Original Schedule",
-                                "new_item": f"Revised Schedule (+{eot} days)",
-                                "original_rate": 0,
-                                "new_rate": 0,
-                                "cost_impact": 0,
-                                "time_impact": eot,
-                                "eot_breakdown": breakdown,
-                                "gantt_chart_data": time_engine.generate_gantt_data()
-                            }
-                        else:
-                            response_text += f"\\n(Note: I couldn't find task '{task_name_query}' in the project schedule.)"
-                    else:
-                        response_text += "\\n(Note: No project schedule found to evaluate time impact.)"
-        
+                        response_text += "\n\nEvaluation complete, but I couldn't generate the PDF report."
+
         # Save AI response
-        session_manager.add_message(session.id, "ai", response_text, metadata={
+        session_manager.add_message(project_id, session_id, "ai", response_text, metadata={
             "workflow_state": workflow_state,
             "has_proposal": proposal_data is not None
         })
@@ -609,7 +439,7 @@ async def chat(request: ChatRequest, db: DBSession = Depends(get_db)):
         return {
             "reply": response_text,
             "proposal": proposal_data,
-            "session_id": session.id,
+            "session_id": session_id,
             "workflow_state": workflow_state
         }
         
@@ -623,66 +453,71 @@ async def chat(request: ChatRequest, db: DBSession = Depends(get_db)):
 # VARIATION MANAGEMENT ENDPOINTS
 # ============================================================================
 
-@app.get("/variation/{variation_id}")
-def get_variation(variation_id: int, db: DBSession = Depends(get_db)):
+@app.get("/variation/{project_id}/{variation_id}")
+def get_variation(project_id: int, variation_id: int, storage: StorageManager = Depends(get_storage)):
     """Get variation details"""
-    from sqlalchemy.orm import joinedload
-    variation = db.query(Variation).options(joinedload(Variation.details)).filter(Variation.id == variation_id).first()
+    variation = storage.get_variation(project_id, variation_id)
     if not variation:
         raise HTTPException(status_code=404, detail="Variation not found")
     return variation
 
-@app.post("/variation/validate/{variation_id}")
-def validate_variation(variation_id: int, db: DBSession = Depends(get_db)):
+@app.post("/variation/validate/{project_id}/{variation_id}")
+def validate_variation(project_id: int, variation_id: int, storage: StorageManager = Depends(get_storage)):
     """Run QS validation checks on a variation"""
-    validator = ValidationEngine(db)
-    results = validator.validate_variation(variation_id)
+    validator = ValidationEngine(storage)
+    results = validator.validate_variation(project_id, variation_id)
     return results
 
-@app.get("/variation/validation-report/{variation_id}")
-def get_validation_report(variation_id: int, db: DBSession = Depends(get_db)):
+@app.get("/variation/validation-report/{project_id}/{variation_id}")
+def get_validation_report(project_id: int, variation_id: int, storage: StorageManager = Depends(get_storage)):
     """Get formatted validation report"""
-    validator = ValidationEngine(db)
-    report = validator.generate_validation_report(variation_id)
+    validator = ValidationEngine(storage)
+    report = validator.generate_validation_report(project_id, variation_id)
     return {"report": report}
 
-@app.put("/variation/{variation_id}/details/{detail_id}")
+@app.put("/variation/{project_id}/{variation_id}/details/{detail_id}")
 def update_variation_detail_endpoint(
+    project_id: int,
     variation_id: int, 
     detail_id: int, 
     updates: dict,
-    db: DBSession = Depends(get_db)
+    storage: StorageManager = Depends(get_storage)
 ):
-    """
-    Update a specific variation detail line item.
-    Updates: {new_rate, new_quantity, justification, new_description}
-    """
-    cost_engine = CostEngine(db)
-    updated_detail = cost_engine.update_variation_detail(detail_id, updates)
+    """Update a specific variation detail line item"""
+    cost_engine = CostEngine(storage)
+    updated_detail = cost_engine.update_variation_detail(project_id, variation_id, detail_id, updates)
     
     if not updated_detail:
         raise HTTPException(status_code=404, detail="Variation detail not found")
         
     return {"status": "success", "detail_id": detail_id, "message": "Detail updated"}
 
-@app.post("/variation/{variation_id}/status")
+@app.post("/variation/{project_id}/{variation_id}/status")
 def update_variation_status(
+    project_id: int,
     variation_id: int,
-    status: str = Body(..., embed=True), # keys: status
-    db: DBSession = Depends(get_db)
+    status: str = Body(..., embed=True),
+    storage: StorageManager = Depends(get_storage)
 ):
     """Update variation status (Approved, Rejected, Under Review)"""
-    variation = db.query(Variation).filter(Variation.id == variation_id).first()
-    if not variation:
+    project = storage.get_project(project_id)
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+    
+    found = False
+    for v in project.get("variations", []):
+        if v["id"] == variation_id:
+            if status not in ["Draft", "Under Review", "Approved", "Rejected"]:
+                raise HTTPException(status_code=400, detail="Invalid status")
+            v["status"] = status
+            v["updated_at"] = datetime.utcnow().isoformat()
+            found = True
+            break
+            
+    if not found:
         raise HTTPException(status_code=404, detail="Variation not found")
         
-    if status not in ["Draft", "Under Review", "Approved", "Rejected"]:
-        raise HTTPException(status_code=400, detail="Invalid status")
-        
-    variation.status = status
-    variation.updated_at = datetime.utcnow()
-    db.commit()
-    
+    storage.update_project(project_id, {"variations": project["variations"]})
     return {"status": "success", "variation_id": variation_id, "new_status": status}
 
 # ============================================================================

@@ -37,8 +37,8 @@ class MLModel:
 
     def fit_boq(self, boq_items):
         if not boq_items: return
-        data = [{'id': item.id, 'project_id': item.project_id, 'description': item.description, 'rate': item.rate, 'quantity': item.quantity, 'is_fixed_rate': item.is_fixed_rate} for item in boq_items]
-        self.boq_df = pd.DataFrame(data)
+        # Expecting boq_items as a list of dicts
+        self.boq_df = pd.DataFrame(boq_items)
         
         # TF-IDF for similarity
         self.tfidf_matrix = self.vectorizer.fit_transform(self.boq_df['description'])
@@ -48,7 +48,6 @@ class MLModel:
         train_df = self.boq_df[self.boq_df['rate'] > 0]
         if len(train_df) >= 3:
             y = train_df['rate'].values
-            # We must transform only the training descriptions
             X = self.vectorizer.transform(train_df['description'])
             self.cost_model.fit(X, y)
             self.is_fitted = True
@@ -58,7 +57,8 @@ class MLModel:
     def fit_activities(self, activities):
         """Train duration model on activities"""
         if not activities: return
-        data = [{'description': a.description, 'duration': a.duration} for a in activities if a.duration > 0]
+        # Expecting activities as a list of dicts
+        data = [{'description': a['name'], 'duration': a['duration']} for a in activities if a.get('duration', 0) > 0]
         if not data: return
         
         df = pd.DataFrame(data)

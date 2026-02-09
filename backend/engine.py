@@ -4,23 +4,18 @@ from datetime import timedelta, datetime
 import math
 import xml.etree.ElementTree as ET
 import os
-from .database import BOQItem, Project, RateBreakdown
+from .storage_manager import storage_manager
 from .ml_model import MLModel
 
 class CostEngine:
-    def __init__(self, db_session):
-        self.db = db_session
+    def __init__(self, storage=None):
+        self.storage = storage or storage_manager
         self.ml_model = MLModel()
 
     def train_model(self, project_id):
-        # Optimization: Only retrain if the project changed or model is empty
-        if self.ml_model.boq_df is not None and not self.ml_model.boq_df.empty:
-            # Check a sample item or count? For now, we assume if boq_df exists, 
-            # it might be the same. A better check would be project_id matching.
-            return
-            
-        items = self.db.query(BOQItem).filter(BOQItem.project_id == project_id).all()
-        self.ml_model.fit_boq(items)
+        project = self.storage.get_project(project_id)
+        if not project: return
+        self.ml_model.fit_boq(project.get("boq_items", []))
 
     def validate_boq_file(self, file_path):
         """
@@ -148,7 +143,7 @@ class CostEngine:
 
     def load_boq(self, file_path, project_id):
         try:
-            items = []
+            items_by_sheet = {}
             
             # Helper to clean numeric values
             def clean_num(val):
@@ -182,48 +177,42 @@ class CostEngine:
                             df = pd.read_excel(xl, sheet_name=sheet_name, skiprows=header_idx)
                             df.columns = [str(c).strip().lower() for c in df.columns]
                         elif 'bill' in sheet_name.lower():
-                            # Fallback: Assume row 10-15 might contain headers if not found, 
-                            # or just assume position if it's a Bill sheet
                             df = df_raw.iloc[10:].copy()
                             df.columns = [f"col_{i}" for i in range(len(df.columns))]
                         else:
                             continue
                     
-                    # Smart Column Mapping
-                    def find_col(keywords, cols):
-                        for c in cols:
-                            if any(k in c for k in keywords):
-                                return c
-                        return None
+                        # Smart Column Mapping
+                        cols = df.columns
+                        col_map = {
+                            'item': next((c for c in cols if any(k in c for k in ['item', 'ref', 'no'])), None) or (cols[0] if len(cols) > 0 else None),
+                            'description': next((c for c in cols if any(k in c for k in ['description', 'desc', 'work'])), None) or (cols[1] if len(cols) > 1 else None),
+                            'unit': next((c for c in cols if any(k in c for k in ['unit', ' un'])), None) or (cols[2] if len(cols) > 2 else None),
+                            'qty': next((c for c in cols if any(k in c for k in ['qty', 'quantity'])), None) or (cols[3] if len(cols) > 3 else None),
+                            'rate': next((c for c in cols if any(k in c for k in ['rate', 'price'])), None) or (cols[4] if len(cols) > 4 else None),
+                            'amount': next((c for c in cols if any(k in c for k in ['amount', 'total'])), None) or (cols[len(cols)-1] if len(cols) > 0 else None)
+                        }
 
-                    cols = df.columns
-                    col_map = {
-                        'item': find_col(['item', 'ref', 'no'], cols) or (cols[0] if len(cols) > 0 else None),
-                        'description': find_col(['description', 'desc', 'work'], cols) or (cols[1] if len(cols) > 1 else None),
-                        'unit': find_col(['unit', ' un'], cols) or (cols[2] if len(cols) > 2 else None),
-                        'qty': find_col(['qty', 'quantity', 'quantity'], cols) or (cols[3] if len(cols) > 3 else None),
-                        'rate': find_col(['rate', 'price'], cols) or (cols[4] if len(cols) > 4 else None),
-                        'amount': find_col(['amount', 'total', 'total amount'], cols) or (cols[len(cols)-1] if len(cols) > 0 else None)
-                    }
+                        sheet_items = []
+                        for _, row in df.iterrows():
+                            desc_col = col_map['description']
+                            if not desc_col or pd.isna(row[desc_col]): continue
+                            
+                            desc_val = str(row[desc_col]).strip()
+                            if not desc_val or desc_val.lower() in ['description', 'desc', 'work']: continue
+                            if len(desc_val) < 3: continue
 
-                    for _, row in df.iterrows():
-                        desc_col = col_map['description']
-                        if not desc_col or pd.isna(row[desc_col]): continue
-                        
-                        desc_val = str(row[desc_col]).strip()
-                        # Skip header repetitions or empty rows
-                        if not desc_val or desc_val.lower() in ['description', 'desc', 'work']: continue
-                        if len(desc_val) < 3: continue
-
-                        items.append(BOQItem(
-                            project_id=project_id,
-                            item_number=str(row.get(col_map['item'], '')),
-                            description=desc_val,
-                            unit=str(row.get(col_map['unit'], '')),
-                            quantity=clean_num(row.get(col_map['qty'], 0)),
-                            rate=clean_num(row.get(col_map['rate'], 0)),
-                            amount=clean_num(row.get(col_map['amount'], 0))
-                        ))
+                            sheet_items.append({
+                                'item_number': str(row.get(col_map['item'], '')),
+                                'description': desc_val,
+                                'unit': str(row.get(col_map['unit'], '')),
+                                'quantity': clean_num(row.get(col_map['qty'], 0)),
+                                'rate': clean_num(row.get(col_map['rate'], 0)),
+                                'amount': clean_num(row.get(col_map['amount'], 0)),
+                                'is_fixed_rate': 0
+                            })
+                        items_by_sheet[sheet_name] = sheet_items
+                    return items_by_sheet
 
             # Backward compatibility / Fallback for CSV
             else:
@@ -257,50 +246,42 @@ class CostEngine:
                     'amount': find_col(['amount', 'total'], df.columns)
                 }
 
+                csv_items = []
                 for _, row in df.iterrows():
                     desc_col = col_map['description']
                     if not desc_col or pd.isna(row[desc_col]): continue
-                    items.append(BOQItem(
-                        project_id=project_id,
-                        item_number=str(row.get(col_map['item'], '')),
-                        description=str(row[desc_col]),
-                        unit=str(row.get(col_map['unit'], '')),
-                        quantity=clean_num(row.get(col_map['qty'], 0)),
-                        rate=clean_num(row.get(col_map['rate'], 0)),
-                        amount=clean_num(row.get(col_map['amount'], 0))
-                    ))
-            
-            if items:
-                self.db.add_all(items)
-                self.db.commit()
-                self.train_model(project_id)
-            return len(items)
+                    csv_items.append({
+                        'item_number': str(row.get(col_map['item'], '')),
+                        'description': str(row[desc_col]),
+                        'unit': str(row.get(col_map['unit'], '')),
+                        'quantity': clean_num(row.get(col_map['qty'], 0)),
+                        'rate': clean_num(row.get(col_map['rate'], 0)),
+                        'amount': clean_num(row.get(col_map['amount'], 0)),
+                        'is_fixed_rate': 0
+                    })
+                items_by_sheet["General"] = csv_items
+                return items_by_sheet
         except Exception as e:
             print(f"Error loading BOQ: {e}")
             import traceback
             traceback.print_exc()
-            return 0
+            return {}
 
     def save_rate_breakdown_df(self, df, project_id):
         """Save a pandas DataFrame of rate breakdowns to the database"""
         try:
             items = []
             for _, row in df.iterrows():
-                items.append(RateBreakdown(
-                    project_id=project_id,
-                    item_ref=str(row.get('item_ref', '')),
-                    description=str(row.get('description', 'Parsed from OCR')),
-                    material_cost=float(row.get('material_cost', 0.0)),
-                    labor_cost=float(row.get('labor_cost', row.get('rate', 0.0))),
-                    plant_cost=float(row.get('plant_cost', 0.0)),
-                    total_rate=float(row.get('total_rate', row.get('rate', 0.0)))
-                ))
+                items.append({
+                    'item_ref': str(row.get('item_ref', '')),
+                    'description': str(row.get('description', 'Parsed from OCR')),
+                    'material_cost': float(row.get('material_cost', 0.0)),
+                    'labor_cost': float(row.get('labor_cost', row.get('rate', 0.0))),
+                    'plant_cost': float(row.get('plant_cost', 0.0)),
+                    'total_rate': float(row.get('total_rate', row.get('rate', 0.0)))
+                })
             
-            if items:
-                self.db.add_all(items)
-                self.db.commit()
-                return len(items)
-            return 0
+            return items
         except Exception as e:
             print(f"Error saving rate breakdown dataframe: {e}")
             import traceback
@@ -337,47 +318,15 @@ class CostEngine:
                 col0 = str(row[0]).strip() if pd.notna(row[0]) else ""
                 if col0 and any(char.isdigit() for char in col0) and '/' in col0:
                     # Save previous item if exists
-                    if current_ref and costs['total'] > 0:
-                        items.append(RateBreakdown(
-                            project_id=project_id, item_ref=current_ref, description=current_desc,
-                            material_cost=costs['mat'], labor_cost=costs['lab'], 
-                            plant_cost=costs['plant'], total_rate=costs['total']
-                        ))
-                    
-                    current_ref = col0
-                    current_desc = str(row[1]) if pd.notna(row[1]) else ""
-                    costs = {'mat': 0.0, 'lab': 0.0, 'plant': 0.0, 'total': 0.0}
-
-                # 2. Look for subtotals (using smarter value finding)
-                def get_row_value(r):
-                    # Try to find the first numeric-looking thing at the end of the row
-                    for val in reversed(r):
-                        if pd.notna(val):
-                            c = clean_val(val)
-                            if c > 0: return c
-                    return 0.0
-
-                if 'total material cost' in row_str:
-                    costs['mat'] = get_row_value(row)
-                elif 'total labour cost' in row_str:
-                    costs['lab'] = get_row_value(row)
-                elif 'total tools and equipment cost' in row_str:
-                    costs['plant'] = get_row_value(row)
-                elif 'total gross unit rate' in row_str:
-                    costs['total'] = get_row_value(row)
-
             # Last item
             if current_ref and costs['total'] > 0:
-                items.append(RateBreakdown(
-                    project_id=project_id, item_ref=current_ref, description=current_desc,
-                    material_cost=costs['mat'], labor_cost=costs['lab'], 
-                    plant_cost=costs['plant'], total_rate=costs['total']
-                ))
+                items.append({
+                    'item_ref': current_ref, 'description': current_desc,
+                    'material_cost': costs['mat'], 'labor_cost': costs['lab'], 
+                    'plant_cost': costs['plant'], 'total_rate': costs['total']
+                })
 
-            if items:
-                self.db.add_all(items)
-                self.db.commit()
-            return len(items)
+            return items
         except Exception as e:
             print(f"Error loading Rate Breakdown: {e}")
             import traceback
@@ -439,10 +388,10 @@ class CostEngine:
         is_fixed = item.get('is_fixed_rate', 0) == 1
         
         if is_fixed:
-            return original_rate
+            return original_rate, "Original Rate"
 
-        project = self.db.query(Project).filter(Project.id == item['project_id']).first()
-        contract_amount = project.accepted_contract_amount if project else 0.0
+        project = self.storage.get_project(item['project_id'])
+        contract_amount = project.get("accepted_contract_amount", 0.0) if project else 0.0
         
         # Avoid division by zero
         qty_change_pct = (abs(qty_change) / original_qty * 100.0) if original_qty > 0 else 100.0
@@ -469,10 +418,12 @@ class CostEngine:
         # 1. Search existing Rate Breakdowns
         similar_item = self.ml_model.find_similar_item(description)
         if similar_item:
-             # Check if we have a breakdown for this similar item
-             breakdown = self.db.query(RateBreakdown).filter(RateBreakdown.item_ref == similar_item.get('item_number')).first()
-             if breakdown:
-                 return breakdown.total_rate, f"Breakdown ({similar_item.get('item_number', 'N/A')})"
+             project = self.storage.get_project(project_id) if project_id else None
+             if project:
+                breakdowns = project.get("rate_breakdowns", [])
+                breakdown = next((b for b in breakdowns if b['item_ref'] == similar_item.get('item_number')), None)
+                if breakdown:
+                    return breakdown['total_rate'], f"Breakdown ({similar_item.get('item_number', 'N/A')})"
         
         # 2. Search HSR/BSR/Quotation files
         external_rate, source = self.search_external_rates(description)
@@ -490,78 +441,63 @@ class CostEngine:
             
         return 0.0, "Not Found"
 
-    def update_variation_detail(self, detail_id, updates):
+    def update_variation_detail(self, project_id, variation_id, detail_id, updates):
         """
         Update a variation detail and recalculate impacts.
         updates: dict containing new_rate, new_quantity, justification, etc.
         """
-        from .database import VariationDetail, Variation
+        variation = self.storage.get_variation(project_id, variation_id)
+        if not variation: return None
         
-        detail = self.db.query(VariationDetail).filter(VariationDetail.id == detail_id).first()
-        if not detail:
-            return None
+        detail = next((d for d in variation.get("details", []) if d["id"] == detail_id), None)
+        if not detail: return None
             
         # Apply updates
         if 'new_rate' in updates:
-            detail.new_rate = float(updates['new_rate'])
-            detail.rate_source = "Manual Adjustment"
+            detail['new_rate'] = float(updates['new_rate'])
+            detail['rate_source'] = "Manual Adjustment"
         if 'new_quantity' in updates:
-            detail.new_quantity = float(updates['new_quantity'])
+            detail['new_quantity'] = float(updates['new_quantity'])
         if 'justification' in updates:
-            detail.justification = updates['justification']
+            detail['justification'] = updates['justification']
         if 'new_description' in updates:
-            detail.new_description = updates['new_description']
+            detail['new_description'] = updates['new_description']
             
         # Recalculate line impact
-        # Net Impact = (New Qty * New Rate) - (Original Qty * Original Rate)
-        val_old = (detail.original_quantity or 0) * (detail.original_rate or 0)
-        val_new = (detail.new_quantity or 0) * (detail.new_rate or 0)
-        detail.cost_impact = val_new - val_old
+        val_old = (detail.get('original_quantity') or 0) * (detail.get('original_rate') or 0)
+        val_new = (detail.get('new_quantity') or 0) * (detail.get('new_rate') or 0)
+        detail['cost_impact'] = val_new - val_old
         
-        self.db.commit()
-        self.db.refresh(detail)
+        # Save updated variation
+        self.storage.update_project(project_id, {"variations": variation["variations"]})
         
-        # Update Parent Variation
-        self.recalculate_variation_totals(detail.variation_id)
+        # Update Parent Variation Totals
+        self.recalculate_variation_totals(project_id, variation_id)
         
         return detail
 
-    def recalculate_variation_totals(self, variation_id):
+    def recalculate_variation_totals(self, project_id, variation_id):
         """Sum up all details to update variation total cost impact"""
-        from .database import Variation, VariationDetail
-        from sqlalchemy import func
-        
-        variation = self.db.query(Variation).filter(Variation.id == variation_id).first()
+        variation = self.storage.get_variation(project_id, variation_id)
         if not variation: return
         
-        total_impact = self.db.query(func.sum(VariationDetail.cost_impact))\
-            .filter(VariationDetail.variation_id == variation_id).scalar() or 0.0
+        total_impact = sum(d.get('cost_impact', 0.0) for d in variation.get('details', []))
             
-        variation.cost_impact = total_impact
-        variation.updated_at = datetime.utcnow()
-        self.db.commit()
+        variation['cost_impact'] = total_impact
+        variation['updated_at'] = datetime.utcnow().isoformat()
+        
+        # Update variation in project
+        project = self.storage.get_project(project_id)
+        for i, v in enumerate(project.get("variations", [])):
+            if v["id"] == variation_id:
+                project["variations"][i] = variation
+                break
+        self.storage.update_project(project_id, {"variations": project["variations"]})
 
     def evaluate_variation_full(self, collected_details, project_id, session_id):
         """
         Processes a full variation evaluation based on collected details.
-        Details: {affected_items, quantity_changes, specification_changes, 
-                  method_changes, location_changes, affected_activities}
         """
-        from .database import Variation, VariationDetail
-        
-        # 1. Create Variation record
-        variation = Variation(
-            project_id=project_id,
-            session_id=session_id,
-            description=f"Variation: {collected_details.get('specification_changes', 'New Variation')}",
-            status="Draft",
-            cost_impact=0.0,
-            time_impact=0
-        )
-        self.db.add(variation)
-        self.db.commit()
-        self.db.refresh(variation)
-        
         total_cost_impact = 0.0
         details_list = []
         
@@ -571,7 +507,6 @@ class CostEngine:
             affected_items = [affected_items]
             
         for item_desc in affected_items:
-            # Find item in BOQ
             similar = self.ml_model.find_similar_item(item_desc)
             if not similar or similar.get('similarity', 0) < 0.6:
                 continue
@@ -580,11 +515,9 @@ class CostEngine:
             qty_info = str(collected_details.get('quantity_changes', "0")).lower()
             try:
                  import re
-                 # Find numbers
                  match = re.search(r'([+-]?\d*\.?\d+)', qty_info)
                  if match:
                      val = float(match.group(1))
-                     # If "total" or "new" is mentioned, and original qty exists, calculate delta
                      if any(k in qty_info for k in ['total', 'new', 'final']) and not any(k in qty_info for k in ['delta', 'increase', 'extra', 'add', 'decrease']):
                          original_qty = similar.get('quantity', 0.0)
                          qty_change = val - original_qty
@@ -592,7 +525,6 @@ class CostEngine:
                          qty_change = val
             except: pass
             
-            # Evaluate using existing logic
             eval_result = self.evaluate_variation(
                 item_desc, 
                 new_material=collected_details.get('specification_changes'),
@@ -600,36 +532,37 @@ class CostEngine:
             )
             
             if eval_result:
-                detail = VariationDetail(
-                    variation_id=variation.id,
-                    boq_item_id=eval_result['item_id'],
-                    original_description=eval_result['original_item'],
-                    new_description=eval_result['new_item'],
-                    original_quantity=similar.get('quantity', 0),
-                    new_quantity=similar.get('quantity', 0) + qty_change,
-                    original_rate=eval_result['original_rate'],
-                    new_rate=eval_result['new_rate'],
-                    rate_source=eval_result['rate_source'],
-                    cost_impact=eval_result['cost_impact'],
-                    justification=f"Method: {collected_details.get('method_changes')}, Location: {collected_details.get('location_changes')}"
-                )
-                self.db.add(detail)
+                detail = {
+                    'id': len(details_list) + 1,
+                    'boq_item_id': eval_result['item_id'],
+                    'original_description': eval_result['original_item'],
+                    'new_description': eval_result['new_item'],
+                    'original_quantity': similar.get('quantity', 0),
+                    'new_quantity': similar.get('quantity', 0) + qty_change,
+                    'original_rate': eval_result['original_rate'],
+                    'new_rate': eval_result['new_rate'],
+                    'rate_source': eval_result['rate_source'],
+                    'cost_impact': eval_result['cost_impact'],
+                    'justification': f"Method: {collected_details.get('method_changes')}, Location: {collected_details.get('location_changes')}"
+                }
                 total_cost_impact += eval_result['cost_impact']
-                details_list.append(eval_result)
+                details_list.append(detail)
 
         # 3. Process Time Impact
-        from .engine import TimeEngine
-        time_engine = TimeEngine(db_session=self.db)
+        time_engine = TimeEngine(storage=self.storage)
         time_impact = time_engine.evaluate_time_impact(collected_details, project_id)
         
-        # 4. Update Variation Totals
-        variation.cost_impact = total_cost_impact
-        variation.time_impact = time_impact
-        variation.updated_at = datetime.utcnow()
-        self.db.commit()
+        # 4. Create Variation In Storage
+        variation_data = {
+            "description": f"Variation: {collected_details.get('specification_changes', 'New Variation')}",
+            "cost_impact": total_cost_impact,
+            "time_impact": time_impact,
+            "details": details_list
+        }
+        variation = self.storage.create_variation(project_id, session_id, variation_data)
         
         return {
-            "variation_id": variation.id,
+            "variation_id": variation['id'],
             "cost_impact": total_cost_impact,
             "time_impact": time_impact,
             "details": details_list
@@ -689,9 +622,9 @@ class CostEngine:
         return 0.0, None 
 
 class TimeEngine:
-    def __init__(self, db_session=None):
+    def __init__(self, storage=None):
         self.graph = nx.DiGraph()
-        self.db = db_session
+        self.storage = storage or storage_manager
         self.cpm_calculated = False
         from .ml_model import MLModel
         self.ml_model = MLModel()
@@ -705,18 +638,23 @@ class TimeEngine:
         return 0.0, 0.0
 
     def parse_schedule(self, file_path, project_id=None):
-        """Parse schedule and optionally store in database"""
-        count = 0
+        """Parse schedule and return internal activities"""
+        self.graph.clear()
         if file_path.endswith('.xml'): 
-            count = self._parse_msp_xml(file_path)
+            self._parse_msp_xml(file_path)
         elif file_path.endswith('.csv') or file_path.endswith('.xlsx'):
-            count = self._parse_msp_csv(file_path)
+            self._parse_msp_csv(file_path)
         
-        # Store activities in database if db session provided
-        if count > 0 and self.db and project_id:
-            self._store_activities_to_db(project_id)
-        
-        return count
+        activities = []
+        for node_id, data in self.graph.nodes(data=True):
+            preds = list(self.graph.predecessors(node_id))
+            activities.append({
+                "activity_id": str(node_id),
+                "name": data.get('name', ''),
+                "duration": data.get('duration', 0.0),
+                "predecessors": ','.join(preds) if preds else None
+            })
+        return activities
 
     def _parse_msp_csv(self, file_path):
         try:
@@ -793,33 +731,7 @@ class TimeEngine:
             print(f"Error parsing MSP: {e}")
             return 0
 
-    def _store_activities_to_db(self, project_id):
-        """Store parsed activities to database"""
-        from .database import Activity
-        
-        try:
-            # Clear existing activities for this project
-            self.db.query(Activity).filter(Activity.project_id == project_id).delete()
-            
-            activities = []
-            for node_id, data in self.graph.nodes(data=True):
-                # Get predecessors
-                preds = list(self.graph.predecessors(node_id))
-                pred_str = ','.join(preds) if preds else None
-                
-                activity = Activity(
-                    project_id=project_id,
-                    activity_id=str(node_id),
-                    name=data.get('name', ''),
-                    duration=data.get('duration', 0.0),
-                    predecessors=pred_str
-                )
-                activities.append(activity)
-            
-            if activities:
-                self.db.add_all(activities)
-                self.db.commit()
-                print(f"Stored {len(activities)} activities to database")
+        return []
         except Exception as e:
             print(f"Error storing activities: {e}")
             self.db.rollback()
@@ -896,10 +808,6 @@ class TimeEngine:
             
             self.cpm_calculated = True
             
-            # Update database if available
-            if self.db:
-                self._update_cpm_in_db(cpm_data)
-            
             return cpm_data
             
         except Exception as e:
@@ -908,28 +816,25 @@ class TimeEngine:
             traceback.print_exc()
             return {}
 
-    def _update_cpm_in_db(self, cpm_data):
-        """Update CPM calculations in database"""
-        from .database import Activity
+    def _update_cpm_in_storage(self, project_id, cpm_data):
+        """Update CPM calculations in storage"""
+        project = self.storage.get_project(project_id)
+        if not project: return
         
-        try:
-            for node_id, data in cpm_data.items():
-                activity = self.db.query(Activity).filter(
-                    Activity.activity_id == str(node_id)
-                ).first()
-                
-                if activity:
-                    activity.early_start = data['es']
-                    activity.early_finish = data['ef']
-                    activity.late_start = data['ls']
-                    activity.late_finish = data['lf']
-                    activity.total_float = data['total_float']
-                    activity.is_critical = 1 if data['is_critical'] else 0
-            
-            self.db.commit()
-        except Exception as e:
-            print(f"Error updating CPM in database: {e}")
-            self.db.rollback()
+        for node_id, data in cpm_data.items():
+            for i, activity in enumerate(project.get("activities", [])):
+                if activity["activity_id"] == str(node_id):
+                    activity.update({
+                        'early_start': data['es'],
+                        'early_finish': data['ef'],
+                        'late_start': data['ls'],
+                        'late_finish': data['lf'],
+                        'total_float': data['total_float'],
+                        'is_critical': 1 if data['is_critical'] else 0
+                    })
+                    break
+        
+        self.storage.update_project(project_id, {"activities": project["activities"]})
 
     def identify_critical_path(self):
         """
@@ -1106,24 +1011,21 @@ class TimeEngine:
         """
         Evaluate time impact (EOT) based on affected activities and duration adjustments.
         """
-        from .database import Activity
+        project = self.storage.get_project(project_id)
+        if not project: return 0
         
-        # 1. Load original schedule from DB
-        activities = self.db.query(Activity).filter(Activity.project_id == project_id).all()
+        activities = project.get("activities", [])
         if not activities:
             return 0
             
         self.graph.clear()
         for act in activities:
-            self.graph.add_node(act.activity_id, name=act.name, duration=act.duration or 0.0)
-            if act.predecessors:
-                # Handle semicolon or comma
-                preds_raw = act.predecessors.replace(';', ',')
+            self.graph.add_node(act['activity_id'], name=act['name'], duration=act['duration'] or 0.0)
+            if act.get('predecessors'):
+                preds_raw = act['predecessors'].replace(';', ',')
                 for p in preds_raw.split(','):
-                    if p.strip():
-                        # Verify predecessor exists to avoid networkx errors
-                        if p.strip() in self.graph:
-                            self.graph.add_edge(p.strip(), act.activity_id)
+                    if p.strip() and p.strip() in self.graph:
+                        self.graph.add_edge(p.strip(), act['activity_id'])
         
         # 2. Baseline CPM
         baseline_results = self.calculate_cpm_full()
@@ -1134,7 +1036,6 @@ class TimeEngine:
         if not isinstance(affected_act_names, list):
             affected_act_names = [affected_act_names]
             
-        # Try to find a percentage change in quantity to apply to duration
         qty_change_pct = 0.0
         qty_info = str(collected_details.get('quantity_changes', "0"))
         try:
@@ -1142,14 +1043,12 @@ class TimeEngine:
             match = re.search(r'([+-]?\d*\.?\d+)', qty_info)
             if match:
                 val = float(match.group(1))
-                # If they just said "10", we assume 10% for time estimation
                 qty_change_pct = val if val < 200 else (val / 100.0) 
         except: pass
         
         applied_count = 0
         for act_name in affected_act_names:
             if not act_name: continue
-            # Simple keyword match to find activity in graph
             best_match = None
             for node_id, data in self.graph.nodes(data=True):
                 if act_name.lower() in str(data.get('name', '')).lower():
@@ -1158,7 +1057,6 @@ class TimeEngine:
             
             if best_match:
                 orig_dur = self.graph.nodes[best_match].get('duration', 0)
-                # Naive duration adjustment: proportional to qty change
                 new_dur = orig_dur * (1 + (qty_change_pct / 100.0)) if qty_change_pct != 0 else orig_dur + 5
                 self.graph.nodes[best_match]['duration'] = new_dur
                 applied_count += 1
@@ -1168,7 +1066,6 @@ class TimeEngine:
             self.cpm_calculated = False
             revised_results = self.calculate_cpm_full()
             revised_duration = max([v['ef'] for v in revised_results.values()]) if revised_results else 0
-            eot_days = max(0, revised_duration - baseline_duration)
-            return int(eot_days)
+            return int(max(0, revised_duration - baseline_duration))
         
         return 0
