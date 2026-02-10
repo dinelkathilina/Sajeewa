@@ -44,7 +44,7 @@ A professional FIDIC-compliant platform for automated construction variation ass
 
 ## 🐳 Quick Start with Docker (Recommended for other laptops)
 
-The easiest way to run this application on any laptop is using Docker. This automatically handles all dependencies like Python, Node.js, and Tesseract OCR.
+The easiest way to run this application on any laptop is using Docker. This automatically handles all dependencies like Python, Node.js, and Tesseract OCR...
 
 ### 1. Prerequisites
 
