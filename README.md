@@ -66,6 +66,18 @@ The easiest way to run this application on any laptop is using Docker. This auto
 - **Frontend UI**: http://localhost:5173
 - **Backend API**: http://localhost:8000
 
+### 4. Daily Usage
+
+- **Next time you run it**, just use:
+  ```bash
+  docker-compose up
+  ```
+- **Stop the app**: Press `Ctrl + C` or run `docker-compose down`.
+- **Rebuild if code changes**:
+  ```bash
+  docker-compose up --build
+  ```
+
 ---
 
 ## 🚀 Manual Setup (Development)
