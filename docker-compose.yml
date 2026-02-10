@@ -5,10 +5,11 @@ services:
       dockerfile: backend/Dockerfile
     ports:
       - "8000:8000"
-    environment:
-      - GROQ_API_KEY=${GROQ_API_KEY}
+    env_file:
+      - .env
     volumes:
       - ./uploaded_files:/app/uploaded_files
+      - ./.env:/app/.env
 
   frontend:
     build:
