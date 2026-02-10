@@ -42,7 +42,33 @@ A professional FIDIC-compliant platform for automated construction variation ass
 - **Styling**: Tailwind CSS
 - **HTTP Client**: Axios
 
-## 🚀 Getting Started
+## 🐳 Quick Start with Docker (Recommended for other laptops)
+
+The easiest way to run this application on any laptop is using Docker. This automatically handles all dependencies like Python, Node.js, and Tesseract OCR.
+
+### 1. Prerequisites
+
+- [Docker Desktop](https://www.docker.com/products/docker-desktop/) installed and running.
+
+### 2. Setup
+
+1. Create a `.env` file in the project root with your API key:
+   ```env
+   GROQ_API_KEY=your_groq_api_key_here
+   ```
+2. Run the following command in the project root:
+   ```bash
+   docker-compose up --build
+   ```
+
+### 3. Access
+
+- **Frontend UI**: http://localhost:5173
+- **Backend API**: http://localhost:8000
+
+---
+
+## 🚀 Manual Setup (Development)
 
 ### Prerequisites
 

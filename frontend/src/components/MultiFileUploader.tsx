@@ -1,5 +1,5 @@
 import React, { useState } from "react";
-import axios from "axios";
+import api from "../services/api";
 import { Upload, FileText, CheckCircle } from "lucide-react";
 
 interface UploaderProps {
@@ -25,13 +25,9 @@ const MultiFileUploader: React.FC<UploaderProps> = ({ onUploadSuccess }) => {
 
     try {
       setStatus("Uploading...");
-      const res = await axios.post(
-        "http://localhost:8000/upload/files",
-        formData,
-        {
-          headers: { "Content-Type": "multipart/form-data" },
-        },
-      );
+      const res = await api.post("/upload/files", formData, {
+        headers: { "Content-Type": "multipart/form-data" },
+      });
 
       if (res.data.status === "success") {
         setStatus("Upload Successful!");

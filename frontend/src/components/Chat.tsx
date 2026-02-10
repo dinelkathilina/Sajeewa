@@ -1,6 +1,6 @@
 import React, { useState } from "react";
 import { useNavigate } from "react-router-dom";
-import axios from "axios";
+import api from "../services/api";
 import { Send, Bot, Download } from "lucide-react";
 
 interface Msg {
@@ -46,7 +46,7 @@ const Chat: React.FC<ChatProps> = ({ projectId }) => {
     setLoading(true);
 
     try {
-      const res = await axios.post("http://localhost:8000/chat", {
+      const res = await api.post("/chat", {
         message: userMsg,
         project_id: projectId,
       });
@@ -71,13 +71,9 @@ const Chat: React.FC<ChatProps> = ({ projectId }) => {
 
   const downloadPDF = async (proposal: any) => {
     try {
-      const response = await axios.post(
-        "http://localhost:8000/generate-pdf",
-        proposal,
-        {
-          responseType: "blob",
-        },
-      );
+      const response = await api.post("/generate-pdf", proposal, {
+        responseType: "blob",
+      });
       const url = window.URL.createObjectURL(new Blob([response.data]));
       const link = document.createElement("a");
       link.href = url;
