@@ -52,7 +52,7 @@ The easiest way to run this application on any laptop is using Docker. This auto
 
 ### 2. Setup
 
-1. Create a `.env` file in the project root with your API key:
+1. Create a `.env` file in the **`backend`** folder (e.g., `Sajeewa/backend/.env`) with your API key:
    ```env
    GROQ_API_KEY=your_groq_api_key_here
    ```
